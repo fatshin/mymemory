@@ -65,6 +65,10 @@ struct RootView: View {
             .navigationTitle("MyMemory")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Text(pipeline.modelStatus).font(.caption2) }
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink { ActionItemsView() } label: { Image(systemName: "checklist") }
+                        .accessibilityLabel("決定事項・TODO")
+                }
                 ToolbarItem { Button { showSettings = true } label: { Image(systemName: "gearshape") } }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }

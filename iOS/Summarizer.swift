@@ -86,7 +86,7 @@ enum Summarizer {
 
     private static func remoteSummarize(_ transcript: String) async throws -> String {
         try await call(prompt: """
-        以下は会話の文字起こし。誤認識を考慮し、(1)要点3〜5個 (2)決定事項 (3)TODO(担当・期限が分かれば付記) を日本語の箇条書きで出力。推測は「推測」と明記。
+        以下は会話の文字起こし。誤認識を考慮し、重複を除き、日本語で次の形式だけで出力する。【要点】の下に3〜5個、【決定事項】の下に決まったこと、【TODO】の下にやること(担当・期限が分かれば付記)を、それぞれ「- 」で始まる箇条書きで書く。該当がなければ「- なし」と書く。推測は「推測」と明記する。
 
         \(transcript)
         """)
