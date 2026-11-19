@@ -12,6 +12,8 @@ final class Recording {
     var summary: String?
     var statusRaw: String         // pending / transcribing / done / failed
     var errorMessage: String?
+    /// 文字起こしの試行回数。起動のたびに同じ録音で落ちるループを防ぐための上限判定に使う。
+    var attempts: Int = 0
 
     init(startedAt: Date, duration: TimeInterval, batteryLevel: Double, fileName: String) {
         self.id = UUID()

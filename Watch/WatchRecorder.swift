@@ -9,7 +9,8 @@ import WatchKit
 @MainActor
 final class WatchRecorder: NSObject, ObservableObject {
     @Published var isRecording = false
-    @Published var elapsedText = "00:00:00"
+    /// 経過時間は View 側の TimelineView が計算する(画面点灯中のみ再描画。毎秒の @Published 更新を廃止)。
+    @Published var sessionStart: Date?
     @Published var chunkCount = 0
     @Published var pendingTransfers = 0
     @Published var lastError: String?
@@ -17,8 +18,25 @@ final class WatchRecorder: NSObject, ObservableObject {
     private let chunkSeconds: TimeInterval = 600
     private var recorder: AVAudioRecorder?
     private var chunkStart = Date()
-    private var sessionStart = Date()
-    private var tickTimer: Timer?
+    /// チャンク分割用の単発タイマー(10分に1回だけ起床。旧: 毎秒タイマー)。
+    private var chunkTimer: Timer?
+
+    /// これ未満かつ非充電なら録音を自動停止し、残りを転送する。
+    private let lowBatteryStopLevel: Float = 0.10
+
+    /// 録音の開始に失敗・割り込みされたときの再試行 (単発タイマー)。予算の判断は RecoveryBudget (単体テスト対象)。
+    private var recoveryTimer: Timer?
+    private var starting = false
+    private var budget = RecoveryBudget()
+    private let recoveryDelay: TimeInterval = 30
+    private var interruptionObserver: NSObjectProtocol?
+
+    /// 未転送チャンクの置き場所。temporaryDirectory は OS に消されうるため Application Support に置く。
+    private static var chunkDirectory: URL {
+        let d = URL.applicationSupportDirectory.appendingPathComponent("Chunks", isDirectory: true)
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }
 
     private let healthStore = HKHealthStore()
     private var workout: HKWorkoutSession?
@@ -27,6 +45,8 @@ final class WatchRecorder: NSObject, ObservableObject {
 
     override init() {
         super.init()
+        // 未有効化だと batteryLevel が常に -1 になり、電池消費の実測(Go/No-Go)が成立しない。
+        WKInterfaceDevice.current().isBatteryMonitoringEnabled = true
         if WCSession.isSupported() {
             wc.delegate = self
             wc.activate()
@@ -36,24 +56,34 @@ final class WatchRecorder: NSObject, ObservableObject {
     // MARK: - Control
 
     func start() {
+        // 権限要求とワークアウト認可の待ち中に再タップされても、録音を二重に起動しない
+        guard !isRecording, !starting else { return }
+        starting = true
         lastError = nil
-        AVAudioApplication.requestRecordPermission { [weak self] granted in
-            Task { @MainActor in
-                guard let self else { return }
-                guard granted else { self.lastError = "マイク権限なし"; return }
-                await self.startWorkoutKeepAlive()
-                self.beginSession()
-            }
+        // async 版: コールバックの隔離を継承する問題 (別スレッド呼び出しで実行時に落ちる) を避ける
+        Task { @MainActor in
+            defer { starting = false }
+            guard await AVAudioApplication.requestRecordPermission() else { lastError = "マイク権限なし"; return }
+            await startWorkoutKeepAlive()
+            beginSession()
         }
     }
 
     func stop() {
-        tickTimer?.invalidate()
-        tickTimer = nil
+        chunkTimer?.invalidate()
+        chunkTimer = nil
+        recoveryTimer?.invalidate()
+        recoveryTimer = nil
+        if let o = interruptionObserver {
+            NotificationCenter.default.removeObserver(o)
+            interruptionObserver = nil
+        }
         finishChunk(sendIfNonEmpty: true)
+        try? AVAudioSession.sharedInstance().setActive(false)
         workout?.end()
         workout = nil
         isRecording = false
+        sessionStart = nil
     }
 
     // MARK: - Internals
@@ -81,19 +111,73 @@ final class WatchRecorder: NSObject, ObservableObject {
             try session.setActive(true)
         } catch {
             lastError = "AudioSession: \(error.localizedDescription)"
+            workout?.end()
+            workout = nil
             return
         }
         sessionStart = Date()
         chunkCount = 0
+        budget.reset()
         isRecording = true
+        observeInterruptions()
         startChunk()
-        tickTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.tick() }
+    }
+
+    /// 着信などで録音が中断されたら、そこまでを送信し、終了通知または再試行で再開する。
+    private func observeInterruptions() {
+        guard interruptionObserver == nil else { return }
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            Task { @MainActor in self?.handleInterruption(typeRaw: raw) }
+        }
+    }
+
+    private func handleInterruption(typeRaw: UInt?) {
+        guard isRecording, let raw = typeRaw, let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        switch type {
+        case .began:
+            // 割り込み中 (通話など) は長さに上限がない。予算を消費せず、終了まで再試行を続ける
+            budget.interruptionBegan()
+            chunkTimer?.invalidate()
+            chunkTimer = nil
+            finishChunk(sendIfNonEmpty: true)
+            handleRecordingFailure("録音が中断されました")
+        case .ended:
+            budget.interruptionEnded()
+            recoveryTimer?.invalidate()
+            recoveryTimer = nil
+            // 再試行が先に成功して録音中なら、二重に録音を始めない
+            guard recorder == nil else { return }
+            try? AVAudioSession.sharedInstance().setActive(true)
+            startChunk()
+        @unknown default:
+            break
+        }
+    }
+
+    /// 録音できない状態。一定間隔で再試行し、上限に達したら停止して触覚で知らせる。
+    private func handleRecordingFailure(_ message: String) {
+        lastError = message
+        recoveryTimer?.invalidate()
+        guard budget.recordFailure() == .retry else {
+            stop()
+            lastError = "\(message): 再開できず停止"
+            WKInterfaceDevice.current().play(.failure)
+            return
+        }
+        recoveryTimer = Timer.scheduledTimer(withTimeInterval: recoveryDelay, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.isRecording, self.recorder == nil else { return }
+                try? AVAudioSession.sharedInstance().setActive(true)
+                self.startChunk()
+            }
         }
     }
 
     private func startChunk() {
-        let url = FileManager.default.temporaryDirectory
+        let url = Self.chunkDirectory
             .appendingPathComponent("chunk-\(Int(Date().timeIntervalSince1970)).m4a")
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -103,11 +187,20 @@ final class WatchRecorder: NSObject, ObservableObject {
         ]
         do {
             let r = try AVAudioRecorder(url: url, settings: settings)
-            guard r.record() else { lastError = "record() 失敗"; return }
+            r.delegate = self
+            guard r.record() else {
+                try? FileManager.default.removeItem(at: url)
+                handleRecordingFailure("record() 失敗")
+                return
+            }
             recorder = r
             chunkStart = Date()
+            chunkTimer?.invalidate()
+            chunkTimer = Timer.scheduledTimer(withTimeInterval: chunkSeconds, repeats: false) { [weak self] _ in
+                Task { @MainActor in self?.rotateChunk() }
+            }
         } catch {
-            lastError = "Recorder: \(error.localizedDescription)"
+            handleRecordingFailure("Recorder: \(error.localizedDescription)")
         }
     }
 
@@ -136,13 +229,49 @@ final class WatchRecorder: NSObject, ObservableObject {
         }
     }
 
-    private func tick() {
-        let e = Int(Date().timeIntervalSince(sessionStart))
-        elapsedText = String(format: "%02d:%02d:%02d", e / 3600, (e % 3600) / 60, e % 60)
-        if Date().timeIntervalSince(chunkStart) >= chunkSeconds {
-            finishChunk(sendIfNonEmpty: true)
-            startChunk()
+    /// チャンク境界: 送信 -> 電池確認 -> 次チャンク開始。
+    private func rotateChunk() {
+        // stop() の直後に積まれていた古いタイマーの実行で、録音が再開してしまうのを防ぐ
+        guard isRecording, recorder != nil else { return }
+        finishChunk(sendIfNonEmpty: true)
+        // チャンクを最後まで録れたときだけ失敗の連続を断つ (開始直後の異常停止の繰り返しを上限で止めるため)
+        budget.recordSuccess()
+        let device = WKInterfaceDevice.current()
+        let charging = device.batteryState == .charging || device.batteryState == .full
+        let level = device.batteryLevel
+        if !charging, level >= 0, level < lowBatteryStopLevel {
+            stop()
+            lastError = "電池\(Int(level * 100))%のため停止"
+            WKInterfaceDevice.current().play(.failure)
+            return
         }
+        startChunk()
+    }
+}
+
+extension WatchRecorder {
+    /// record() 成功後に OS が録音を止めた場合の検知。delegate は main thread とは限らないため MainActor へ移す。
+    fileprivate func handleUnexpectedStop(from id: ObjectIdentifier) {
+        // 既に差し替え済みの古い recorder の遅延通知では、新しい録音を止めない
+        guard isRecording, let current = recorder, ObjectIdentifier(current) == id else { return }
+        chunkTimer?.invalidate()
+        chunkTimer = nil
+        finishChunk(sendIfNonEmpty: true)
+        handleRecordingFailure("録音が停止しました")
+    }
+}
+
+extension WatchRecorder: AVAudioRecorderDelegate {
+    nonisolated func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+        // 自分で stop() したときは flag == true。false のときだけ異常停止として扱う
+        guard !flag else { return }
+        let id = ObjectIdentifier(recorder)
+        Task { @MainActor in self.handleUnexpectedStop(from: id) }
+    }
+
+    nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
+        let id = ObjectIdentifier(recorder)
+        Task { @MainActor in self.handleUnexpectedStop(from: id) }
     }
 }
 

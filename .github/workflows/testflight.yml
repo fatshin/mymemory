@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
 jobs:
   upload:
-    runs-on: macos-15
+    runs-on: macos-26
     env:
       TEAM_ID: ${{ secrets.TEAM_ID }}
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}

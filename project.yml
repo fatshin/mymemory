@@ -13,7 +13,7 @@ options:
 packages:
   WhisperKit:
     url: https://github.com/argmaxinc/WhisperKit
-    from: 0.9.0
+    exactVersion: 0.18.0
 targets:
   MyMemory:
     type: application
@@ -22,16 +22,24 @@ targets:
     dependencies:
       - package: WhisperKit
       - target: MyMemoryWatch
+    scheme:
+      testTargets: [MyMemoryTests]
     info:
       path: iOS/Info.plist
       properties:
         CFBundleDisplayName: MyMemory
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSMicrophoneUsageDescription: 録音データの再生・文字起こしに使用します
         UILaunchScreen: {}
         ITSAppUsesNonExemptEncryption: false
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIBackgroundModes: [processing]
+        BGTaskSchedulerPermittedIdentifiers: [com.fatshin.mymemory.transcribe]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.fatshin.mymemory
+        TARGETED_DEVICE_FAMILY: "1"
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: minimal
   MyMemoryWatch:
@@ -42,6 +50,8 @@ targets:
       path: Watch/Info.plist
       properties:
         CFBundleDisplayName: MyMemory
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         WKApplication: true
         WKCompanionAppBundleIdentifier: com.fatshin.mymemory
         WKBackgroundModes: [workout-processing]
@@ -55,5 +65,16 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.fatshin.mymemory.watchkitapp
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: minimal
+  MyMemoryTests:
+    type: bundle.unit-test
+    platform: iOS
+    # 電力判定は UIKit 非依存の純粋関数のため、ソースを直接取り込んでテストする。
+    sources: [Tests, iOS/PowerPolicy.swift, iOS/RetryPolicy.swift, Shared/RecoveryBudget.swift]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.fatshin.mymemory.tests
+        GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: minimal

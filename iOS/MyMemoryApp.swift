@@ -9,7 +9,10 @@ struct MyMemoryApp: App {
     init() {
         let c = try! ModelContainer(for: Recording.self)
         container = c
-        _pipeline = StateObject(wrappedValue: Pipeline(context: c.mainContext))
+        let p = Pipeline(context: c.mainContext)
+        _pipeline = StateObject(wrappedValue: p)
+        // アプリ起動の完了前に登録する必要がある
+        BackgroundTranscribe.register(pipeline: p)
     }
 
     var body: some Scene {
