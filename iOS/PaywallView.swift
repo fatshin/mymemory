@@ -7,31 +7,29 @@ struct PaywallView: View {
     @EnvironmentObject var store: Store
 
     var body: some View {
-        NavigationStack {
-            SubscriptionStoreView(productIDs: [PlanConfig.proMonthlyID]) {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("MyMemory Pro").font(.largeTitle.bold())
-                    Label("文字起こしの時間制限なし (無料は1日\(Int(PlanConfig.freeDailySeconds / 60))分まで)", systemImage: "waveform")
-                    Label("無料枠を超えて残っている録音も、翌日を待たずに文字起こし", systemImage: "tray.full")
-                    Text("サブスクリプションは期間終了の24時間前までに解約しない限り自動で更新されます。解約は設定アプリの「サブスクリプション」から行えます。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                .padding()
+        // シートで開くと SubscriptionStoreView が自前の閉じるボタン (×) を出すため、独自のボタンは置かない
+        SubscriptionStoreView(productIDs: [PlanConfig.proMonthlyID]) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("MyMemory Pro").font(.largeTitle.bold())
+                Label("文字起こしの時間制限なし (無料は1日\(Int(PlanConfig.freeDailySeconds / 60))分まで)", systemImage: "waveform")
+                Label("無料枠を超えて残っている録音も、翌日を待たずに文字起こし", systemImage: "tray.full")
+                Text("サブスクリプションは期間終了の24時間前までに解約しない限り自動で更新されます。解約は設定アプリの「サブスクリプション」から行えます。")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
-            .storeButton(.visible, for: .restorePurchases)
-            .subscriptionStorePolicyDestination(url: PlanConfig.termsURL, for: .termsOfService)
-            .modifier(PrivacyPolicyLink())
-            // この修飾子を付けると購入の取引は Transaction.updates に流れないため、ここで完了処理と状態の更新を行う
-            .onInAppPurchaseCompletion { _, result in
-                guard case .success(.success(let verification)) = result else { return }
-                if case .verified(let transaction) = verification { await transaction.finish() }
-                await store.refresh()
-                dismiss()
-            }
-            .toolbar { Button("閉じる") { dismiss() } }
-            // 「購入を復元」の後にも状態を取り直す
-            .onDisappear { Task { await store.refresh() } }
+            .padding()
         }
+        .storeButton(.visible, for: .restorePurchases)
+        .subscriptionStorePolicyDestination(url: PlanConfig.termsURL, for: .termsOfService)
+        .modifier(PrivacyPolicyLink())
+        // この修飾子を付けると購入の取引は Transaction.updates に流れないため、ここで完了処理と状態の更新を行う
+        .onInAppPurchaseCompletion { _, result in
+            guard case .success(.success(let verification)) = result else { return }
+            if case .verified(let transaction) = verification { await transaction.finish() }
+            await store.refresh()
+            dismiss()
+        }
+        // 「購入を復元」の後にも状態を取り直す
+        .onDisappear { Task { await store.refresh() } }
     }
 }
 
