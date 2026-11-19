@@ -10,8 +10,8 @@ enum PlanConfig {
     static let renewalGrace: TimeInterval = 3 * 24 * 3600
     /// 利用規約 (Apple の標準 EULA)。
     static let termsURL = URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!
-    /// プライバシーポリシーの公開 URL。公開したら設定する (利用者の作業。草稿は docs/privacy-policy.md)。
-    static let privacyURL: URL? = nil
+    /// プライバシーポリシーの公開 URL (原稿は docs/privacy-policy.md)。
+    static let privacyURL: URL? = URL(string: "https://fatshin.github.io/mymemory-legal/")
 }
 
 /// 有料かどうかの判定。最後に確認できた有効期限だけで決める (起動直後やバックグラウンドでも同期的に読める)。
