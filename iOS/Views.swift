@@ -11,7 +11,10 @@ struct RootView: View {
     @AppStorage(OnboardingView.doneKey) private var onboardingDone = false
 
     private var days: [(day: Date, items: [Recording])] {
-        let filtered = query.isEmpty ? recordings : recordings.filter { ($0.transcript ?? "").localizedStandardContains(query) }
+        // 文字起こしと要約の両方を検索する
+        let filtered = query.isEmpty ? recordings : recordings.filter {
+            ($0.transcript ?? "").localizedStandardContains(query) || ($0.summary ?? "").localizedStandardContains(query)
+        }
         let cal = Calendar.current
         return Dictionary(grouping: filtered) { cal.startOfDay(for: $0.startedAt) }
             .map { (day: $0.key, items: $0.value.sorted { $0.startedAt < $1.startedAt }) }
@@ -54,7 +57,7 @@ struct RootView: View {
                     }
                 }
             }
-            .searchable(text: $query, prompt: "文字起こしを検索")
+            .searchable(text: $query, prompt: "文字起こし・要約を検索")
             .overlay { if recordings.isEmpty { ContentUnavailableView("録音なし", systemImage: "applewatch", description: Text("Watchで録音を開始")) } }
             .navigationDestination(for: UUID.self) { id in
                 if let rec = recordings.first(where: { $0.id == id }) { DetailView(rec: rec) }
