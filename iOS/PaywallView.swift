@@ -7,7 +7,7 @@ struct PaywallView: View {
     @EnvironmentObject var store: Store
 
     var body: some View {
-        // シートで開くと SubscriptionStoreView が自前の閉じるボタン (×) を出すため、独自のボタンは置かない
+        // 閉じるボタンは SubscriptionStoreView 自身の .cancellation を使う (独自のボタンと重ねると 2 つ出る)
         SubscriptionStoreView(productIDs: [PlanConfig.proMonthlyID]) {
             VStack(alignment: .leading, spacing: 12) {
                 Text("MyMemory Pro").font(.largeTitle.bold())
@@ -19,6 +19,7 @@ struct PaywallView: View {
             .padding()
         }
         .storeButton(.visible, for: .restorePurchases)
+        .storeButton(.visible, for: .cancellation)
         .subscriptionStorePolicyDestination(url: PlanConfig.termsURL, for: .termsOfService)
         .modifier(PrivacyPolicyLink())
         // この修飾子を付けると購入の取引は Transaction.updates に流れないため、ここで完了処理と状態の更新を行う
