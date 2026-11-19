@@ -1,0 +1,53 @@
+name: MyMemory
+options:
+  bundleIdPrefix: com.fatshin
+  deploymentTarget:
+    iOS: "18.0"
+    watchOS: "11.0"
+  createIntermediateGroups: true
+packages:
+  WhisperKit:
+    url: https://github.com/argmaxinc/WhisperKit
+    from: 0.9.0
+targets:
+  MyMemory:
+    type: application
+    platform: iOS
+    sources: [iOS, Shared]
+    dependencies:
+      - package: WhisperKit
+      - target: MyMemoryWatch
+    info:
+      path: iOS/Info.plist
+      properties:
+        CFBundleDisplayName: MyMemory
+        NSMicrophoneUsageDescription: 録音データの再生・文字起こしに使用します
+        UILaunchScreen: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.fatshin.mymemory
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: minimal
+  MyMemoryWatch:
+    type: application
+    platform: watchOS
+    sources: [Watch, Shared]
+    info:
+      path: Watch/Info.plist
+      properties:
+        CFBundleDisplayName: MyMemory
+        WKApplication: true
+        WKCompanionAppBundleIdentifier: com.fatshin.mymemory
+        WKBackgroundModes: [workout-processing]
+        NSMicrophoneUsageDescription: 一日の会話を録音します
+        NSHealthShareUsageDescription: バックグラウンド録音の維持にワークアウトセッションを使用します
+        NSHealthUpdateUsageDescription: バックグラウンド録音の維持にワークアウトセッションを使用します
+    entitlements:
+      path: Watch/Watch.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.fatshin.mymemory.watchkitapp
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: minimal
