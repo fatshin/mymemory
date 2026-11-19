@@ -54,14 +54,9 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         WKApplication: true
         WKCompanionAppBundleIdentifier: com.fatshin.mymemory
-        WKBackgroundModes: [workout-processing]
+        # 録音は前面で開始し、画面が消えても続ける (Apple: 開始後はバックグラウンドでも録音を継続できる)
+        UIBackgroundModes: [audio]
         NSMicrophoneUsageDescription: 一日の会話を録音します
-        NSHealthShareUsageDescription: バックグラウンド録音の維持にワークアウトセッションを使用します
-        NSHealthUpdateUsageDescription: バックグラウンド録音の維持にワークアウトセッションを使用します
-    entitlements:
-      path: Watch/Watch.entitlements
-      properties:
-        com.apple.developer.healthkit: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.fatshin.mymemory.watchkitapp
@@ -71,7 +66,7 @@ targets:
     type: bundle.unit-test
     platform: iOS
     # 電力判定は UIKit 非依存の純粋関数のため、ソースを直接取り込んでテストする。
-    sources: [Tests, iOS/PowerPolicy.swift, iOS/RetryPolicy.swift, iOS/TextChunker.swift, iOS/ExportFormatter.swift, Shared/RecoveryBudget.swift]
+    sources: [Tests, iOS/PowerPolicy.swift, iOS/RetryPolicy.swift, iOS/TextChunker.swift, iOS/ExportFormatter.swift, Shared/RecoveryBudget.swift, Shared/ChunkWriter.swift]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.fatshin.mymemory.tests
