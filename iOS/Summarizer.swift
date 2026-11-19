@@ -33,6 +33,22 @@ enum Summarizer {
     }
 
     static func summarize(_ transcript: String) async throws -> String {
+        try await call(prompt: """
+        以下は会話の文字起こし。誤認識を考慮し、(1)要点3〜5個 (2)決定事項 (3)TODO(担当・期限が分かれば付記) を日本語の箇条書きで出力。推測は「推測」と明記。
+
+        \(transcript)
+        """)
+    }
+
+    static func reflect(timeline: String) async throws -> String {
+        try await call(prompt: """
+        以下は1日の音声ログ(時刻付き文字起こし)。日本語で出力: (1)1日の流れを時系列で簡潔に (2)重要な会話・決定 (3)TODO・約束 (4)気づき。誤認識を考慮し、推測は「推測」と明記。
+
+        \(timeline)
+        """)
+    }
+
+    private static func call(prompt: String) async throws -> String {
         guard let key = Keychain.get(keyName), !key.isEmpty else {
             throw Failure(message: "APIキー未設定 (設定画面)")
         }
@@ -41,11 +57,6 @@ enum Summarizer {
         req.setValue(key, forHTTPHeaderField: "x-api-key")
         req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         req.setValue("application/json", forHTTPHeaderField: "content-type")
-        let prompt = """
-        以下は会話の文字起こし。誤認識を考慮し、(1)要点3〜5個 (2)決定事項 (3)TODO(担当・期限が分かれば付記) を日本語の箇条書きで出力。推測は「推測」と明記。
-
-        \(transcript)
-        """
         let body: [String: Any] = [
             "model": model,
             "max_tokens": 1500,
