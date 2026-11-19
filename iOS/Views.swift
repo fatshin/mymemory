@@ -5,6 +5,8 @@ struct RootView: View {
     @EnvironmentObject var pipeline: Pipeline
     @Query(sort: \Recording.startedAt, order: .reverse) private var recordings: [Recording]
     @State private var showSettings = false
+    @State private var showPaywall = false
+    @EnvironmentObject var store: Store
     @State private var query = ""
     @AppStorage(OnboardingView.doneKey) private var onboardingDone = false
 
@@ -24,6 +26,18 @@ struct RootView: View {
     var body: some View {
         NavigationStack {
             List {
+                if pipeline.quotaHeld > 0 && !store.isPro {
+                    Section {
+                        Button {
+                            showPaywall = true
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("今日の無料枠 (\(Int(PlanConfig.freeDailySeconds / 60))分) を使い切りました").font(.subheadline.bold())
+                                Text("\(pipeline.quotaHeld)件の録音は消えずに残り、明日またはProで文字起こしされます").font(.caption)
+                            }
+                        }
+                    }
+                }
                 ForEach(days, id: \.day) { group in
                     Section {
                         ForEach(group.items) { rec in
@@ -51,6 +65,7 @@ struct RootView: View {
                 ToolbarItem { Button { showSettings = true } label: { Image(systemName: "gearshape") } }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .sheet(isPresented: $showPaywall) { PaywallView() }
             .fullScreenCover(isPresented: .constant(!onboardingDone)) { OnboardingView() }
         }
     }
@@ -164,12 +179,22 @@ extension Recording {
 }
 
 struct SettingsView: View {
+    @EnvironmentObject var store: Store
+    @State private var showPaywall = false
     @State private var key = Keychain.get(Summarizer.keyName) ?? ""
     @AppStorage(Summarizer.remoteAllowedKey) private var remoteAllowed = false
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
             Form {
+                Section("MyMemory Pro") {
+                    if store.isPro {
+                        Label("Pro を利用中 (文字起こしの時間制限なし)", systemImage: "checkmark.seal")
+                    } else {
+                        Text("無料プラン: 文字起こしは1日\(Int(PlanConfig.freeDailySeconds / 60))分まで").font(.footnote)
+                        Button("Pro にする / 購入を復元") { showPaywall = true }
+                    }
+                }
                 Section("要約") {
                     switch OnDeviceSummarizer.status {
                     case .available:
@@ -192,6 +217,7 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("設定")
+            .sheet(isPresented: $showPaywall) { PaywallView() }
             .toolbar { Button("保存") { Keychain.set(key, for: Summarizer.keyName); dismiss() } }
         }
     }

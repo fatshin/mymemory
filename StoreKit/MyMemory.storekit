@@ -1,0 +1,43 @@
+{
+  "identifier" : "5C1F8A2E",
+  "nonRenewingSubscriptions" : [ ],
+  "products" : [ ],
+  "settings" : {
+    "_locale" : "ja_JP",
+    "_storefront" : "JPN"
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "21543001",
+      "localizations" : [ ],
+      "name" : "MyMemory Pro",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [ ],
+          "codeOffers" : [ ],
+          "displayPrice" : "980",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "6543210001",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "文字起こしの時間制限なし",
+              "displayName" : "MyMemory Pro (月額)",
+              "locale" : "ja"
+            }
+          ],
+          "productID" : "com.fatshin.mymemory.pro.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Pro Monthly",
+          "subscriptionGroupID" : "21543001",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}

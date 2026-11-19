@@ -24,6 +24,8 @@ targets:
       - target: MyMemoryWatch
     scheme:
       testTargets: [MyMemoryTests]
+      # 商品を App Store Connect に登録する前に、シミュレータで購入を試すためのローカル設定
+      storeKitConfiguration: StoreKit/MyMemory.storekit
     info:
       path: iOS/Info.plist
       properties:
@@ -66,7 +68,7 @@ targets:
     type: bundle.unit-test
     platform: iOS
     # 電力判定は UIKit 非依存の純粋関数のため、ソースを直接取り込んでテストする。
-    sources: [Tests, iOS/PowerPolicy.swift, iOS/RetryPolicy.swift, iOS/TextChunker.swift, iOS/ExportFormatter.swift, Shared/RecoveryBudget.swift, Shared/ChunkWriter.swift]
+    sources: [Tests, iOS/PowerPolicy.swift, iOS/RetryPolicy.swift, iOS/TextChunker.swift, iOS/ExportFormatter.swift, iOS/UsageQuota.swift, Shared/RecoveryBudget.swift, Shared/ChunkWriter.swift]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.fatshin.mymemory.tests
