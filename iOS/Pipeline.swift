@@ -44,6 +44,20 @@ final class Pipeline: NSObject, ObservableObject {
         }
         enqueueUnfinished()
         observePowerState()
+        pruneOldAudio()
+    }
+
+    /// 設定で選んだ日数より古い、文字起こし済みの録音の音声ファイルだけを消す (既定は消さない)。
+    func pruneOldAudio(now: Date = Date()) {
+        let days = RetentionPolicy.days
+        guard days > 0 else { return }
+        let desc = FetchDescriptor<Recording>(predicate: #Predicate { $0.statusRaw == "done" })
+        let recs = (try? context.fetch(desc)) ?? []
+        let items = recs.map { RetentionPolicy.Item(id: $0.id, startedAt: $0.startedAt, transcribed: !($0.transcript ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+        let ids = Set(RetentionPolicy.audioToDelete(items, now: now, days: days))
+        for rec in recs where ids.contains(rec.id) {
+            try? FileManager.default.removeItem(at: rec.fileURL)
+        }
     }
 
     // MARK: Power policy (省電力)

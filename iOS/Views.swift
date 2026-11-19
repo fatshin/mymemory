@@ -118,7 +118,10 @@ struct DetailView: View {
                     ShareLink(item: ExportFormatter.recording(rec.exportEntry)) {
                         Label("書き出し", systemImage: "square.and.arrow.up")
                     }
-                    Button("再文字起こし") { pipeline.retry(rec) }
+                    // 自動削除などで音声が無い録音は、文字起こしし直せない
+                    if FileManager.default.fileExists(atPath: rec.fileURL.path) {
+                        Button("再文字起こし") { pipeline.retry(rec) }
+                    }
                     Button("削除", role: .destructive) {
                         try? FileManager.default.removeItem(at: rec.fileURL)
                         ctx.delete(rec)
@@ -186,6 +189,8 @@ struct SettingsView: View {
     @State private var showPaywall = false
     @State private var key = Keychain.get(Summarizer.keyName) ?? ""
     @AppStorage(Summarizer.remoteAllowedKey) private var remoteAllowed = false
+    @AppStorage(RetentionPolicy.key) private var retentionDays = 0
+    @EnvironmentObject var pipeline: Pipeline
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
@@ -215,8 +220,17 @@ struct SettingsView: View {
                 } footer: {
                     Text("オンにすると、端末内で要約できないときに限り、文字起こしテキストを\(Summarizer.remoteRecipient)へ送ります。音声は送りません。APIキーはこの端末のKeychainにのみ保存します。")
                 }
-                Section("プライバシー") {
-                    Text("録音と文字起こしはこの端末内に保存します。録音は録音の詳細画面のメニューから削除できます。").font(.footnote)
+                Section {
+                    Picker("古い音声を自動で削除", selection: $retentionDays) {
+                        ForEach(RetentionPolicy.choices, id: \.self) { d in
+                            Text(d == 0 ? "しない" : "\(d)日より前").tag(d)
+                        }
+                    }
+                    .onChange(of: retentionDays) { _, _ in pipeline.pruneOldAudio() }
+                } header: {
+                    Text("プライバシーと容量")
+                } footer: {
+                    Text("録音と文字起こしはこの端末内に保存します。自動削除で消すのは文字起こし済みの音声だけで、文字起こしと要約は残ります。録音は詳細画面のメニューから個別に削除できます。")
                 }
             }
             .navigationTitle("設定")
