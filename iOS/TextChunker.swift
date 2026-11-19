@@ -41,10 +41,11 @@ enum SummaryRoute: Equatable {
     case onDevice
     case remote
 
+    /// 外部 API は、キーがあり、かつ利用者が送信を明示的に許可したときだけ選ぶ (審査ガイドライン 5.1.2(i))。
     /// どちらも使えなければ nil (呼び出し側が理由を表示する)。
-    static func choose(onDeviceAvailable: Bool, hasAPIKey: Bool) -> SummaryRoute? {
+    static func choose(onDeviceAvailable: Bool, hasAPIKey: Bool, remoteAllowed: Bool) -> SummaryRoute? {
         if onDeviceAvailable { return .onDevice }
-        if hasAPIKey { return .remote }
+        if hasAPIKey && remoteAllowed { return .remote }
         return nil
     }
 }

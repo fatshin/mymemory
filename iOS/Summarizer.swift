@@ -42,17 +42,29 @@ enum Summarizer {
 
     static var hasAPIKey: Bool { !(Keychain.get(keyName) ?? "").isEmpty }
 
+    /// 外部 API への送信許可。既定は不許可。設定画面のトグルで利用者が明示的に有効にする。
+    static let remoteAllowedKey = "remoteSummaryAllowed"
+    static var remoteAllowed: Bool { UserDefaults.standard.bool(forKey: remoteAllowedKey) }
+    /// 送信先の表記。審査ガイドライン 5.1.2(i) に沿って送信先の事業者名を示す。
+    static let remoteRecipient = "Anthropic の API"
+
     /// 端末内が使えれば端末内、使えなければ API キーで外部 API。どちらも無ければ理由を返す。
     /// 端末内モデルが準備中なら外部 API へ切り替えず、待つよう伝える (利用者の意図しない送信を避ける)。
     static func currentRoute() throws -> SummaryRoute {
         if OnDeviceSummarizer.isPreparing {
             throw Failure(message: "端末内モデルを準備中です。しばらく待ってから再試行してください")
         }
-        if let route = SummaryRoute.choose(onDeviceAvailable: OnDeviceSummarizer.isAvailable, hasAPIKey: hasAPIKey) {
+        let onDevice = OnDeviceSummarizer.isAvailable
+        if onDevice { return .onDevice }
+        let key = hasAPIKey, allowed = remoteAllowed
+        if let route = SummaryRoute.choose(onDeviceAvailable: onDevice, hasAPIKey: key, remoteAllowed: allowed) {
             return route
         }
         if case .unavailable(let reason) = OnDeviceSummarizer.status {
-            throw Failure(message: "\(reason)。外部APIを使う場合は設定でAPIキーを登録してください")
+            if key && !allowed {
+                throw Failure(message: "\(reason)。\(remoteRecipient)で要約する場合は、設定で送信を許可してください")
+            }
+            throw Failure(message: "\(reason)。\(remoteRecipient)で要約する場合は、設定でAPIキーを登録し送信を許可してください")
         }
         throw Failure(message: "要約を実行できません")
     }
@@ -89,6 +101,10 @@ enum Summarizer {
     }
 
     private static func call(prompt: String) async throws -> String {
+        // 経路選択を通らない呼び出しがあっても、許可なしでは送らない (二重の防御)
+        guard remoteAllowed else {
+            throw Failure(message: "\(remoteRecipient)への送信が許可されていません (設定画面)")
+        }
         guard let key = Keychain.get(keyName), !key.isEmpty else {
             throw Failure(message: "APIキー未設定 (設定画面)")
         }

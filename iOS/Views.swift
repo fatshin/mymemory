@@ -6,6 +6,7 @@ struct RootView: View {
     @Query(sort: \Recording.startedAt, order: .reverse) private var recordings: [Recording]
     @State private var showSettings = false
     @State private var query = ""
+    @AppStorage(OnboardingView.doneKey) private var onboardingDone = false
 
     private var days: [(day: Date, items: [Recording])] {
         let filtered = query.isEmpty ? recordings : recordings.filter { ($0.transcript ?? "").localizedStandardContains(query) }
@@ -13,6 +14,11 @@ struct RootView: View {
         return Dictionary(grouping: filtered) { cal.startOfDay(for: $0.startedAt) }
             .map { (day: $0.key, items: $0.value.sorted { $0.startedAt < $1.startedAt }) }
             .sorted { $0.day > $1.day }
+    }
+
+    private func allItems(on day: Date) -> [Recording] {
+        recordings.filter { Calendar.current.isDate($0.startedAt, inSameDayAs: day) }
+            .sorted { $0.startedAt < $1.startedAt }
     }
 
     var body: some View {
@@ -27,7 +33,8 @@ struct RootView: View {
                         HStack {
                             Text(group.day, format: .dateTime.year().month().day().weekday())
                             Spacer()
-                            NavigationLink("振り返り") { DayReflectionView(day: group.day, items: group.items) }
+                            // 検索中でも 1 日分は全件を渡す (書き出しで録音が黙って欠けないように)
+                            NavigationLink("振り返り") { DayReflectionView(day: group.day, items: allItems(on: group.day)) }
                                 .font(.caption)
                         }
                     }
@@ -44,6 +51,7 @@ struct RootView: View {
                 ToolbarItem { Button { showSettings = true } label: { Image(systemName: "gearshape") } }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .fullScreenCover(isPresented: .constant(!onboardingDone)) { OnboardingView() }
         }
     }
 }
@@ -89,6 +97,9 @@ struct DetailView: View {
                         job = Task { await summarize() }
                     }
                     .disabled(rec.transcript == nil || summarizing)
+                    ShareLink(item: ExportFormatter.recording(rec.exportEntry)) {
+                        Label("書き出し", systemImage: "square.and.arrow.up")
+                    }
                     Button("再文字起こし") { pipeline.retry(rec) }
                     Button("削除", role: .destructive) {
                         try? FileManager.default.removeItem(at: rec.fileURL)
@@ -146,10 +157,15 @@ func confirmedRoute(shown: SummaryRoute?, update: (SummaryRoute?) -> Void) throw
 extension Recording {
     /// 削除済み、または保存先から外れた録音ではない。
     var isAlive: Bool { !isDeleted && modelContext != nil }
+
+    var exportEntry: ExportEntry {
+        ExportEntry(startedAt: startedAt, duration: duration, summary: summary, transcript: transcript)
+    }
 }
 
 struct SettingsView: View {
     @State private var key = Keychain.get(Summarizer.keyName) ?? ""
+    @AppStorage(Summarizer.remoteAllowedKey) private var remoteAllowed = false
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
@@ -160,13 +176,20 @@ struct SettingsView: View {
                         Label("端末内で要約 (通信なし)", systemImage: "iphone")
                     case .unavailable(let reason):
                         Label(reason, systemImage: "exclamationmark.triangle")
-                        Text("APIキーを登録すると外部APIで要約します").font(.footnote)
+                        Text("APIキーを登録し送信を許可すると、\(Summarizer.remoteRecipient)で要約します").font(.footnote)
                     }
                 }
-                Section("Anthropic APIキー (任意 / 端末Keychainのみ保存)") {
-                    SecureField("sk-ant-…", text: $key)
+                Section {
+                    Toggle("文字起こしテキストを\(Summarizer.remoteRecipient)に送信して要約する", isOn: $remoteAllowed)
+                    SecureField("Anthropic APIキー (sk-ant-…)", text: $key)
+                } header: {
+                    Text("外部への送信 (任意・既定はオフ)")
+                } footer: {
+                    Text("オンにすると、端末内で要約できないときに限り、文字起こしテキストを\(Summarizer.remoteRecipient)へ送ります。音声は送りません。APIキーはこの端末のKeychainにのみ保存します。")
                 }
-                Section { Text("端末内で要約できるときはAPIキーを使わない。外部APIへ送るのは文字起こしテキストのみで、音声は端末外へ出ない。").font(.footnote) }
+                Section("プライバシー") {
+                    Text("録音と文字起こしはこの端末内に保存します。録音は録音の詳細画面のメニューから削除できます。").font(.footnote)
+                }
             }
             .navigationTitle("設定")
             .toolbar { Button("保存") { Keychain.set(key, for: Summarizer.keyName); dismiss() } }
@@ -205,6 +228,12 @@ struct DayReflectionView: View {
         }
         .navigationTitle(day.formatted(date: .abbreviated, time: .omitted))
         .toolbar {
+            ShareLink(item: MarkdownFile(name: ExportFormatter.fileName(for: day),
+                                         text: ExportFormatter.day(day, entries: items.map(\.exportEntry), reflection: text)),
+                      preview: SharePreview(ExportFormatter.fileName(for: day))) {
+                Image(systemName: "square.and.arrow.up")
+            }
+            .accessibilityLabel("1日分を書き出し")
             Button(loading ? "生成中…" : "振り返り生成" + routeSuffix(shownRoute)) { job = Task { await run() } }
                 .disabled(loading || timeline.isEmpty)
         }

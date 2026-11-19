@@ -38,16 +38,22 @@ final class TextChunkerTests: XCTestCase {
 
 /// 端末内を最優先し、通信と API キーは端末内が使えないときだけ使う方針を固定する。
 final class SummaryRouteTests: XCTestCase {
-    func testOnDeviceWinsEvenWithAPIKey() {
-        XCTAssertEqual(SummaryRoute.choose(onDeviceAvailable: true, hasAPIKey: true), .onDevice)
-        XCTAssertEqual(SummaryRoute.choose(onDeviceAvailable: true, hasAPIKey: false), .onDevice)
+    func testOnDeviceWinsEvenWithAPIKeyAndPermission() {
+        XCTAssertEqual(SummaryRoute.choose(onDeviceAvailable: true, hasAPIKey: true, remoteAllowed: true), .onDevice)
+        XCTAssertEqual(SummaryRoute.choose(onDeviceAvailable: true, hasAPIKey: false, remoteAllowed: false), .onDevice)
     }
 
-    func testFallsBackToRemoteOnlyWithKey() {
-        XCTAssertEqual(SummaryRoute.choose(onDeviceAvailable: false, hasAPIKey: true), .remote)
+    func testFallsBackToRemoteOnlyWithKeyAndPermission() {
+        XCTAssertEqual(SummaryRoute.choose(onDeviceAvailable: false, hasAPIKey: true, remoteAllowed: true), .remote)
+    }
+
+    /// 審査ガイドライン 5.1.2(i): キーがあっても、利用者が許可していなければ外部へ送らない。
+    func testNeverSendsWithoutExplicitPermission() {
+        XCTAssertNil(SummaryRoute.choose(onDeviceAvailable: false, hasAPIKey: true, remoteAllowed: false))
     }
 
     func testNoRouteWhenNeitherIsAvailable() {
-        XCTAssertNil(SummaryRoute.choose(onDeviceAvailable: false, hasAPIKey: false))
+        XCTAssertNil(SummaryRoute.choose(onDeviceAvailable: false, hasAPIKey: false, remoteAllowed: true))
+        XCTAssertNil(SummaryRoute.choose(onDeviceAvailable: false, hasAPIKey: false, remoteAllowed: false))
     }
 }
