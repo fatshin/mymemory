@@ -1,7 +1,8 @@
 import Foundation
 import Security
 
-/// BYOK: 文字起こしテキストのみ送信 (音声は送らない)。
+/// 要約の入口。端末内 (Foundation Models) を優先し、使えないときだけ BYOK の外部 API を使う。
+/// 外部 API へ送るのは文字起こしテキストのみ (音声は送らない)。
 enum Keychain {
     static func set(_ value: String, for key: String) {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
@@ -32,7 +33,46 @@ enum Summarizer {
         var errorDescription: String? { message }
     }
 
-    static func summarize(_ transcript: String) async throws -> String {
+    /// 要約の結果と、どこで実行したか。
+    struct Result {
+        let text: String
+        let route: SummaryRoute
+        var labeled: String { text + "\n\n(" + (route == .onDevice ? "端末内で要約" : "外部APIで要約") + ")" }
+    }
+
+    static var hasAPIKey: Bool { !(Keychain.get(keyName) ?? "").isEmpty }
+
+    /// 端末内が使えれば端末内、使えなければ API キーで外部 API。どちらも無ければ理由を返す。
+    /// 端末内モデルが準備中なら外部 API へ切り替えず、待つよう伝える (利用者の意図しない送信を避ける)。
+    static func currentRoute() throws -> SummaryRoute {
+        if OnDeviceSummarizer.isPreparing {
+            throw Failure(message: "端末内モデルを準備中です。しばらく待ってから再試行してください")
+        }
+        if let route = SummaryRoute.choose(onDeviceAvailable: OnDeviceSummarizer.isAvailable, hasAPIKey: hasAPIKey) {
+            return route
+        }
+        if case .unavailable(let reason) = OnDeviceSummarizer.status {
+            throw Failure(message: "\(reason)。外部APIを使う場合は設定でAPIキーを登録してください")
+        }
+        throw Failure(message: "要約を実行できません")
+    }
+
+    /// 経路は呼び出し側で事前に決めて渡す。ボタンに表示した経路と実際の送信先を一致させるため。
+    static func summarize(_ transcript: String, route: SummaryRoute) async throws -> Result {
+        switch route {
+        case .onDevice: return Result(text: try await OnDeviceSummarizer.summarize(transcript), route: route)
+        case .remote: return Result(text: try await remoteSummarize(transcript), route: route)
+        }
+    }
+
+    static func reflect(timeline: String, route: SummaryRoute) async throws -> Result {
+        switch route {
+        case .onDevice: return Result(text: try await OnDeviceSummarizer.reflect(timeline: timeline), route: route)
+        case .remote: return Result(text: try await remoteReflect(timeline: timeline), route: route)
+        }
+    }
+
+    private static func remoteSummarize(_ transcript: String) async throws -> String {
         try await call(prompt: """
         以下は会話の文字起こし。誤認識を考慮し、(1)要点3〜5個 (2)決定事項 (3)TODO(担当・期限が分かれば付記) を日本語の箇条書きで出力。推測は「推測」と明記。
 
@@ -40,7 +80,7 @@ enum Summarizer {
         """)
     }
 
-    static func reflect(timeline: String) async throws -> String {
+    private static func remoteReflect(timeline: String) async throws -> String {
         try await call(prompt: """
         以下は1日の音声ログ(時刻付き文字起こし)。日本語で出力: (1)1日の流れを時系列で簡潔に (2)重要な会話・決定 (3)TODO・約束 (4)気づき。誤認識を考慮し、推測は「推測」と明記。
 

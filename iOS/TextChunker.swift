@@ -1,0 +1,50 @@
+import Foundation
+
+/// 端末内モデルの文脈上限 (日本語はおおむね 1 文字 1 トークン) に収まるよう、文章を区間に分ける。
+/// 純粋関数にして単体テストする。
+enum TextChunker {
+    /// 改行を優先して区切り、1 区間が `maxChars` 文字を超えないように分ける。
+    /// 改行が無い長い行は文字数で切る。空白だけの区間は返さない。
+    static func split(_ text: String, maxChars: Int) -> [String] {
+        precondition(maxChars > 0, "maxChars must be positive")
+        var chunks: [String] = []
+        var current = ""
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            var rest = Substring(line)
+            while rest.count > maxChars {
+                flush(&current, into: &chunks)
+                let cut = rest.index(rest.startIndex, offsetBy: maxChars)
+                append(String(rest[..<cut]), into: &chunks)
+                rest = rest[cut...]
+            }
+            let piece = String(rest)
+            let needed = current.isEmpty ? piece.count : current.count + 1 + piece.count
+            if needed > maxChars { flush(&current, into: &chunks) }
+            current = current.isEmpty ? piece : current + "\n" + piece
+        }
+        flush(&current, into: &chunks)
+        return chunks
+    }
+
+    private static func flush(_ current: inout String, into chunks: inout [String]) {
+        append(current, into: &chunks)
+        current = ""
+    }
+
+    private static func append(_ piece: String, into chunks: inout [String]) {
+        if !piece.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { chunks.append(piece) }
+    }
+}
+
+/// 要約をどこで実行するか。端末内を優先し、使えなければ利用者の API キーで外部 API を使う。
+enum SummaryRoute: Equatable {
+    case onDevice
+    case remote
+
+    /// どちらも使えなければ nil (呼び出し側が理由を表示する)。
+    static func choose(onDeviceAvailable: Bool, hasAPIKey: Bool) -> SummaryRoute? {
+        if onDeviceAvailable { return .onDevice }
+        if hasAPIKey { return .remote }
+        return nil
+    }
+}

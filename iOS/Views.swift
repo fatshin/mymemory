@@ -68,7 +68,10 @@ struct DetailView: View {
     @Environment(\.modelContext) private var ctx
     let rec: Recording
     @State private var summarizing = false
+    @State private var job: Task<Void, Never>?
+    @State private var shownRoute: SummaryRoute?
     @State private var error: String?
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ScrollView {
@@ -82,8 +85,10 @@ struct DetailView: View {
         .toolbar {
             ToolbarItem {
                 Menu {
-                    Button("要約 (外部API)") { Task { await summarize() } }
-                        .disabled(rec.transcript == nil || summarizing)
+                    Button(summarizing ? "要約中…" : "要約" + routeSuffix(shownRoute)) {
+                        job = Task { await summarize() }
+                    }
+                    .disabled(rec.transcript == nil || summarizing)
                     Button("再文字起こし") { pipeline.retry(rec) }
                     Button("削除", role: .destructive) {
                         try? FileManager.default.removeItem(at: rec.fileURL)
@@ -92,14 +97,55 @@ struct DetailView: View {
                 } label: { Image(systemName: "ellipsis.circle") }
             }
         }
+        .onAppear { shownRoute = try? Summarizer.currentRoute() }
+        .onChange(of: scenePhase) { _, p in if p == .active { shownRoute = try? Summarizer.currentRoute() } }
+        .onDisappear { job?.cancel() }  // 画面を離れたら要約を止めて電力を使わない
     }
 
     private func summarize() async {
         guard let t = rec.transcript else { return }
-        summarizing = true; defer { summarizing = false }
-        do { rec.summary = try await Summarizer.summarize(t); try? ctx.save() }
-        catch { self.error = error.localizedDescription }
+        summarizing = true; error = nil
+        defer { summarizing = false }
+        do {
+            let route = try confirmedRoute(shown: shownRoute) { shownRoute = $0 }
+            let result = try await Summarizer.summarize(t, route: route)
+            // 削除された録音や、待つ間に文字起こし直された録音には書かない
+            guard rec.isAlive, rec.transcript == t else { return }
+            rec.summary = result.labeled
+            try ctx.save()
+        } catch where Task.isCancelled || error is CancellationError {
+            return
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
+}
+
+/// 送信先を押す前に示す。外部 API へ送るときは必ず分かるようにする。
+func routeSuffix(_ route: SummaryRoute?) -> String {
+    switch route {
+    case .onDevice: return " (端末内)"
+    case .remote: return " (外部APIへ送信)"
+    case nil: return ""
+    }
+}
+
+/// ボタンに表示した経路とタップ時点の経路が一致するときだけ実行する。
+/// 表示が古いまま外部 API へ送ることを防ぐ。ずれていれば表示を更新して止める。
+@MainActor
+func confirmedRoute(shown: SummaryRoute?, update: (SummaryRoute?) -> Void) throws -> SummaryRoute {
+    let now: SummaryRoute
+    do { now = try Summarizer.currentRoute() } catch { update(nil); throw error }
+    guard now == shown else {
+        update(now)
+        throw Summarizer.Failure(message: "要約の送信先が変わりました。ボタンの表示を確認してもう一度押してください")
+    }
+    return now
+}
+
+extension Recording {
+    /// 削除済み、または保存先から外れた録音ではない。
+    var isAlive: Bool { !isDeleted && modelContext != nil }
 }
 
 struct SettingsView: View {
@@ -108,10 +154,19 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Anthropic APIキー (BYOK / 端末Keychainのみ保存)") {
+                Section("要約") {
+                    switch OnDeviceSummarizer.status {
+                    case .available:
+                        Label("端末内で要約 (通信なし)", systemImage: "iphone")
+                    case .unavailable(let reason):
+                        Label(reason, systemImage: "exclamationmark.triangle")
+                        Text("APIキーを登録すると外部APIで要約します").font(.footnote)
+                    }
+                }
+                Section("Anthropic APIキー (任意 / 端末Keychainのみ保存)") {
                     SecureField("sk-ant-…", text: $key)
                 }
-                Section { Text("送信されるのは文字起こしテキストのみ。音声は端末外へ出ない。").font(.footnote) }
+                Section { Text("端末内で要約できるときはAPIキーを使わない。外部APIへ送るのは文字起こしテキストのみで、音声は端末外へ出ない。").font(.footnote) }
             }
             .navigationTitle("設定")
             .toolbar { Button("保存") { Keychain.set(key, for: Summarizer.keyName); dismiss() } }
@@ -121,11 +176,16 @@ struct SettingsView: View {
 
 /// 1日分の文字起こしを時系列に連結し、日次リフレクションを生成 (ライフログ補完の中核)。
 struct DayReflectionView: View {
+    @Environment(\.modelContext) private var ctx
     let day: Date
     let items: [Recording]
     @State private var text: String?
     @State private var loading = false
+    @State private var progress: String?
+    @State private var job: Task<Void, Never>?
+    @State private var shownRoute: SummaryRoute?
     @State private var error: String?
+    @Environment(\.scenePhase) private var scenePhase
 
     private var timeline: String {
         items.compactMap { r in
@@ -137,6 +197,7 @@ struct DayReflectionView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                if let progress, loading { Text(progress).font(.caption).foregroundStyle(.secondary) }
                 if let text { Text(text).textSelection(.enabled) }
                 if let error { Text(error).foregroundStyle(.red) }
                 Section("タイムライン") { Text(timeline.isEmpty ? "文字起こしなし" : timeline).font(.footnote).textSelection(.enabled) }
@@ -144,14 +205,74 @@ struct DayReflectionView: View {
         }
         .navigationTitle(day.formatted(date: .abbreviated, time: .omitted))
         .toolbar {
-            Button(loading ? "生成中…" : "振り返り生成") { Task { await run() } }
+            Button(loading ? "生成中…" : "振り返り生成" + routeSuffix(shownRoute)) { job = Task { await run() } }
                 .disabled(loading || timeline.isEmpty)
+        }
+        .onAppear { shownRoute = try? Summarizer.currentRoute() }
+        .onChange(of: scenePhase) { _, p in if p == .active { shownRoute = try? Summarizer.currentRoute() } }
+        .onDisappear { job?.cancel() }  // 画面を離れたら残りの録音の要約を止める
+    }
+
+    /// 録音ごとの要約を再利用し、無い録音だけをその場で要約して保存してから、1 日分を束ねる。
+    /// 毎回すべての文字起こしを要約し直すより、電力と時間を抑えられる。
+    private func run() async {
+        loading = true; error = nil
+        defer { loading = false; progress = nil }
+        do {
+            // 経路は開始時に 1 回だけ決める。途中で端末内と外部 API が混ざらないようにする
+            let route = try confirmedRoute(shown: shownRoute) { shownRoute = $0 }
+            let targets = items.filter { !($0.transcript ?? "").isEmpty }
+            var lines: [String] = []
+            var failed = 0
+            var saveError: String?
+            for (i, r) in targets.enumerated() {
+                try Task.checkCancellation()
+                let s: String
+                if let saved = r.summary {
+                    s = Self.stripRouteLabel(saved)
+                } else if let t = r.transcript {
+                    progress = "録音を要約中 \(i + 1) / \(targets.count)"
+                    do {
+                        let result = try await Summarizer.summarize(t, route: route)
+                        s = result.text
+                        // 削除された録音や、待つ間に文字起こし直された録音には保存しない
+                        if r.isAlive, r.transcript == t {
+                            r.summary = result.labeled
+                            do { try ctx.save() } catch { saveError = error.localizedDescription }
+                        }
+                    } catch where Task.isCancelled || error is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        // 1 本が要約できなくても 1 日分は作る。失敗分は保存せず、次回また試す
+                        s = "(この録音は要約できませんでした)"
+                        failed += 1
+                    }
+                } else {
+                    continue
+                }
+                guard r.isAlive else { continue }
+                lines.append("[\(r.startedAt.formatted(date: .omitted, time: .shortened))] \(s)")
+            }
+            try Task.checkCancellation()
+            // 全部失敗した日は中身のない振り返りを出さない (通信断・キー無効など)
+            if !lines.isEmpty, failed == lines.count {
+                throw Summarizer.Failure(message: "録音をひとつも要約できませんでした。通信やAPIキー、端末内モデルの状態を確認してください")
+            }
+            if let saveError { self.error = "要約の保存に失敗: \(saveError)" }
+            progress = "1日分をまとめています"
+            text = try await Summarizer.reflect(timeline: lines.joined(separator: "\n"), route: route).labeled
+        } catch where Task.isCancelled || error is CancellationError {
+            return
+        } catch {
+            self.error = error.localizedDescription
         }
     }
 
-    private func run() async {
-        loading = true; defer { loading = false }
-        do { text = try await Summarizer.reflect(timeline: timeline) }
-        catch { self.error = error.localizedDescription }
+    /// 保存済み要約の末尾にある「(端末内で要約)」などの注記を、束ねる前に外す。
+    static func stripRouteLabel(_ s: String) -> String {
+        for label in ["\n\n(端末内で要約)", "\n\n(外部APIで要約)"] where s.hasSuffix(label) {
+            return String(s.dropLast(label.count))
+        }
+        return s
     }
 }

@@ -200,6 +200,7 @@ final class Pipeline: NSObject, ObservableObject {
                 modelLoadFailures = 0
                 modelStatus = "準備完了"
                 rec.transcript = text
+                rec.summary = nil  // 文字起こし直したら古い要約は使わない (振り返りで再利用されるため)
                 rec.statusRaw = "done"
             } catch is ModelLoadError where Task.isCancelled {
                 // 時間切れ中の取得・ロード中断は失敗ではない
