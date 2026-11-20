@@ -234,13 +234,17 @@ final class Pipeline: NSObject, ObservableObject {
             try? context.save()
             do {
                 if !modelLoaded { modelStatus = "モデルDL/ロード中…" }
-                let text = try await transcriber.transcribe(audioPath: rec.fileURL.path)
-                modelLoaded = true
-                modelLoadFailures = 0
-                modelStatus = "準備完了"
-                rec.transcript = text
-                // 長さの情報が欠けていても無料枠を素通りさせない (音声ファイルから実際の長さを取る)
-                UsageQuota.record(rec.duration > 0 ? rec.duration : Self.audioDuration(rec.fileURL))
+                let result = try await transcriber.transcribe(audioPath: rec.fileURL.path)
+                if !result.skippedSilent {
+                    modelLoaded = true
+                    modelLoadFailures = 0
+                    modelStatus = "準備完了"
+                    // 長さの情報が欠けていても無料枠を素通りさせない (音声ファイルから実際の長さを取る)
+                    UsageQuota.record(rec.duration > 0 ? rec.duration : Self.audioDuration(rec.fileURL))
+                }
+                rec.transcript = result.text
+                // 文字が残らなかった理由を見えるようにする (文字起こしに成功した見た目にしない)
+                rec.errorMessage = result.text.isEmpty ? result.emptyReason : nil
                 rec.summary = nil  // 文字起こし直したら古い要約は使わない (振り返りで再利用されるため)
                 rec.statusRaw = "done"
             } catch is ModelLoadError where Task.isCancelled {
@@ -306,8 +310,23 @@ extension Pipeline: WCSessionDelegate {
 final class Transcriber: @unchecked Sendable {
     private var whisper: WhisperKit?
 
+    struct Output: Sendable {
+        let text: String
+        let level: AudioLevel?
+        /// 無音と判定して Whisper を呼ばなかった (無料枠にも数えない)。
+        let skippedSilent: Bool
+
+        var emptyReason: String {
+            let db = level.map { " (最大音量 \(Int($0.peakDBFS)) dBFS)" } ?? ""
+            return skippedSilent ? "無音と判定したため文字起こししていません\(db)" : "音声を言葉として認識できませんでした\(db)"
+        }
+    }
+
     @concurrent
-    func transcribe(audioPath: String) async throws -> String {
+    func transcribe(audioPath: String) async throws -> Output {
+        // 無音ならモデルを読み込まずに終える (Whisper は無音から定型文を作るうえ、電力も使う)
+        let level = AudioLevel.measure(URL(fileURLWithPath: audioPath))
+        if let level, level.isSilent { return Output(text: "", level: level, skippedSilent: true) }
         let w: WhisperKit
         if let loaded = whisper {
             w = loaded
@@ -339,8 +358,11 @@ final class Transcriber: @unchecked Sendable {
         // 推論量は減らず並列度が上がるため使わない。
         let results = try await w.transcribe(
             audioPath: audioPath,
-            decodeOptions: DecodingOptions(language: "ja"))
-        return results.map(\.text).joined(separator: "\n")
+            decodeOptions: DecodingOptions(language: "ja", skipSpecialTokens: true))
+        let segments = results.flatMap(\.segments).map {
+            TranscriptCleaner.Segment(text: $0.text)
+        }
+        return Output(text: TranscriptCleaner.clean(segments), level: level, skippedSilent: false)
     }
 }
 

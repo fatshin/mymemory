@@ -52,6 +52,32 @@ final class ChunkWriterTests: XCTestCase {
         XCTAssertEqual(total, 2.5, accuracy: 0.15, "区切りで音声が欠けない (AAC の前後の余白分だけ誤差を許す)")
     }
 
+    /// 書き出した音声の中身が無音になっていない (長さだけでなく音量も残る)。
+    /// 文字起こしが「ご視聴ありがとうございました」だけになる不具合の切り分け用: 変換で音が消えていないことを固定する。
+    func testConvertedAudioKeepsSignalLevel() throws {
+        for rate in [48_000.0, 16_000.0] {
+            let box = ChunkBox()
+            let writer = ChunkWriter(directory: dir, chunkSeconds: 60, settings: settings) { box.add($0) }
+            // tap と同じ 4096 フレームずつ、10 秒以上
+            let frames = AVAudioFrameCount(4_096)
+            for _ in 0..<Int(rate * 10 / Double(frames)) { try writer.append(buffer(frames: frames, rate: rate)) }
+            let chunk = try XCTUnwrap(writer.finish())
+            let f = try AVAudioFile(forReading: chunk.url)
+            let read = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: f.processingFormat, frameCapacity: AVAudioFrameCount(f.length)))
+            try f.read(into: read)
+            XCTAssertEqual(Double(read.frameLength) / f.processingFormat.sampleRate, 10, accuracy: 0.3, "rate \(rate)")
+            let p = read.floatChannelData![0]
+            var sum: Float = 0
+            // AAC の先頭の余白を避けて中央 5 秒で測る
+            let start = Int(f.processingFormat.sampleRate * 2.5), end = Int(f.processingFormat.sampleRate * 7.5)
+            for i in start..<end { sum += p[i] * p[i] }
+            let rms = (sum / Float(end - start)).squareRoot()
+            // 振幅 0.2 の正弦波の RMS は約 0.141
+            XCTAssertGreaterThan(rms, 0.1, "rate \(rate): 音量が消えている")
+            try? FileManager.default.removeItem(at: chunk.url)
+        }
+    }
+
     /// 停止後に遅れて届いた入力で、新しいファイルを作らない (送られないまま残るため)。
     func testAppendAfterFinishIsIgnored() throws {
         let box = ChunkBox()

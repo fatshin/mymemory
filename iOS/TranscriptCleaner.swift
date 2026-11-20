@@ -1,0 +1,93 @@
+import Foundation
+import AVFoundation
+
+/// 音声ファイルの長さ・最大音量・声らしい時間。無音の判定と、実機での切り分け (詳細画面の表示) に使う。
+struct AudioLevel: Equatable, Sendable {
+    let duration: TimeInterval
+    /// 最大振幅 (dBFS)。完全な無音は -120。表示用 (クリック音 1 回でも上がるため判定には使わない)。
+    let peakDBFS: Float
+    /// 100ms ごとの RMS が `voicedThresholdDBFS` を超えた時間の合計 (秒)。
+    let voicedSeconds: TimeInterval
+
+    /// 100ms の RMS がこれを超えれば、声 (または何かの音) がある区間とみなす。静かな場所の小声を捨てないよう低めにとる。
+    static let voicedThresholdDBFS: Float = -50
+    /// 声らしい時間がこれ未満なら無音とみなし、文字起こしをしない
+    /// (WhisperKit 0.18.0 は「発話なし」の確率を計算せず常に 0 のため、無音から定型文を作る。電力も使わない)。
+    static let minVoicedSeconds: TimeInterval = 1.0
+
+    var isSilent: Bool { voicedSeconds < Self.minVoicedSeconds }
+
+    static func dbfs(peak: Float) -> Float { peak > 0 ? max(-120, 20 * log10(peak)) : -120 }
+
+    /// ファイルを 100ms ずつ読んで、最大振幅と声らしい時間を求める。読めなければ nil。
+    static func measure(_ url: URL) -> AudioLevel? {
+        guard let f = try? AVAudioFile(forReading: url) else { return nil }
+        let format = f.processingFormat
+        let window = AVAudioFrameCount(max(1, format.sampleRate / 10))
+        guard format.sampleRate > 0, let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: window) else { return nil }
+        let voicedRMS = pow(10, voicedThresholdDBFS / 20)
+        var peak: Float = 0
+        var voicedFrames = 0
+        while f.framePosition < f.length {
+            do { try f.read(into: buf, frameCount: window) } catch { break }
+            let n = Int(buf.frameLength)
+            guard n > 0, let data = buf.floatChannelData else { break }
+            let p = data[0]  // 録音はモノラル。複数チャンネルでも先頭で判定する
+            var sum: Float = 0
+            for i in 0..<n { let v = p[i]; peak = max(peak, abs(v)); sum += v * v }
+            if (sum / Float(n)).squareRoot() > voicedRMS { voicedFrames += n }
+        }
+        return AudioLevel(duration: Double(f.length) / format.sampleRate, peakDBFS: dbfs(peak: peak),
+                          voicedSeconds: Double(voicedFrames) / format.sampleRate)
+    }
+}
+
+/// Whisper の出力から、無音や雑音から作られた定型文を取り除く。
+enum TranscriptCleaner {
+    /// 注意: WhisperKit 0.18.0 は区間の「発話なし」の確率を計算せず常に 0 を返す (TextDecoder.swift の TODO)。
+    /// そのため区間の判定には使わず、文面だけで判断する。
+    struct Segment: Equatable {
+        let text: String
+    }
+
+    /// 同じ文がこの回数以上続いたら 1 つにまとめる (「はい」「はい」のような普通の繰り返しは残す)。
+    static let repeatCollapseCount = 3
+
+    /// 無音・雑音から作られやすい定型文 (動画の字幕に多い言い回し)。区間がこれだけでできているときに限って捨てる。
+    static let hallucinations = [
+        "ご視聴ありがとうございました", "ご視聴ありがとうございます",
+        "チャンネル登録よろしくお願いします", "チャンネル登録お願いします", "チャンネル登録をお願いします",
+        "高評価よろしくお願いします", "次の動画でお会いしましょう", "最後までご視聴いただきありがとうございました",
+    ]
+
+    static func clean(_ segments: [Segment]) -> String {
+        let texts = segments
+            .map { stripSpecialTokens($0.text).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && !isOnlyHallucination($0) }
+        // 同じ文が 3 回以上続く部分 (無音・雑音での繰り返し) だけを 1 つにまとめる
+        var out: [String] = []
+        var i = 0
+        while i < texts.count {
+            var j = i
+            while j + 1 < texts.count, texts[j + 1] == texts[i] { j += 1 }
+            let run = j - i + 1
+            out.append(contentsOf: run >= repeatCollapseCount ? [texts[i]] : Array(texts[i...j]))
+            i = j + 1
+        }
+        return out.joined(separator: "\n")
+    }
+
+    private static func stripSpecialTokens(_ s: String) -> String {
+        s.replacingOccurrences(of: #"<\|[^|>]*\|>"#, with: "", options: .regularExpression)
+    }
+
+    /// 句読点と空白を除き、定型文をすべて取り除いた残りが空なら true。
+    static func isOnlyHallucination(_ s: String) -> Bool {
+        var t = s
+        for ch in ["。", "、", "！", "!", "？", "?", "・", " ", "　", ".", ","] { t = t.replacingOccurrences(of: ch, with: "") }
+        guard !t.isEmpty else { return true }
+        // 長い言い回しから先に除く (短い方が長い方の一部を食わないように)
+        for h in hallucinations.sorted(by: { $0.count > $1.count }) { t = t.replacingOccurrences(of: h, with: "") }
+        return t.isEmpty
+    }
+}

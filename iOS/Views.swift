@@ -88,7 +88,11 @@ private struct Row: View {
                 Text(rec.statusRaw).font(.caption).foregroundStyle(.secondary)
             }
             Text("\(Int(rec.duration / 60))分").font(.caption)
-            if let t = rec.transcript { Text(t).lineLimit(2).font(.footnote).foregroundStyle(.secondary) }
+            if let t = rec.transcript, !t.isEmpty {
+                Text(t).lineLimit(2).font(.footnote).foregroundStyle(.secondary)
+            } else if rec.statusRaw == "done", let e = rec.errorMessage {
+                Text(e).lineLimit(2).font(.footnote).foregroundStyle(.orange)
+            }
         }
     }
 }
@@ -102,13 +106,17 @@ struct DetailView: View {
     @State private var shownRoute: SummaryRoute?
     @State private var error: String?
     @Environment(\.scenePhase) private var scenePhase
+    @State private var level: AudioLevel?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 if let s = rec.summary { Section("要約") { Text(s).textSelection(.enabled) } }
                 if let t = rec.transcript { Section("文字起こし") { Text(t).textSelection(.enabled) } }
-                if let e = rec.errorMessage ?? error { Text(e).foregroundStyle(.red) }
+                // 無音などで文字が残らなかった案内 (status は done) は失敗ではないため赤にしない
+                if let e = rec.errorMessage ?? error { Text(e).foregroundStyle(rec.statusRaw == "done" && error == nil ? .orange : .red) }
+                // 実機での切り分け用: 音声ファイルの実際の長さと最大音量
+                if let level { Text("音声: \(Int(level.duration))秒・声らしい時間 \(Int(level.voicedSeconds))秒・最大音量 \(Int(level.peakDBFS)) dBFS").font(.caption).foregroundStyle(.secondary) }
             }
             .padding()
         }
@@ -125,6 +133,7 @@ struct DetailView: View {
                     // 自動削除などで音声が無い録音は、文字起こしし直せない
                     if FileManager.default.fileExists(atPath: rec.fileURL.path) {
                         Button("再文字起こし") { pipeline.retry(rec) }
+                        ShareLink(item: rec.fileURL) { Label("音声ファイルを共有", systemImage: "waveform") }
                     }
                     Button("削除", role: .destructive) {
                         try? FileManager.default.removeItem(at: rec.fileURL)
@@ -135,6 +144,10 @@ struct DetailView: View {
         }
         .onAppear { shownRoute = try? Summarizer.currentRoute() }
         .onChange(of: scenePhase) { _, p in if p == .active { shownRoute = try? Summarizer.currentRoute() } }
+        .task(id: rec.fileName) {
+            let url = rec.fileURL
+            level = await Task.detached(priority: .utility) { AudioLevel.measure(url) }.value
+        }
         .onDisappear { job?.cancel() }  // 画面を離れたら要約を止めて電力を使わない
     }
 
