@@ -10,6 +10,8 @@ options:
     iOS: "26.0"
     watchOS: "11.0"
   createIntermediateGroups: true
+  # 日本向けのアプリ。日付や購入画面の表示を日本語にする
+  developmentLanguage: ja
 packages:
   WhisperKit:
     url: https://github.com/argmaxinc/WhisperKit
@@ -30,6 +32,7 @@ targets:
       path: iOS/Info.plist
       properties:
         CFBundleDisplayName: MyMemory
+        CFBundleLocalizations: [ja]
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSMicrophoneUsageDescription: 録音データの再生・文字起こしに使用します
@@ -52,6 +55,7 @@ targets:
       path: Watch/Info.plist
       properties:
         CFBundleDisplayName: MyMemory
+        CFBundleLocalizations: [ja]
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         WKApplication: true

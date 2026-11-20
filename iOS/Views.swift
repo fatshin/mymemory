@@ -29,6 +29,13 @@ struct RootView: View {
     var body: some View {
         NavigationStack {
             List {
+                // 長い状態 (例: 無料枠の上限) も途切れず読めるよう、ツールバーではなく一覧の先頭に全文を出す
+                if !recordings.isEmpty {
+                    Section {
+                        Label(pipeline.modelStatus, systemImage: "waveform")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
                 if pipeline.quotaHeld > 0 && !store.isPro {
                     Section {
                         Button {
@@ -64,11 +71,6 @@ struct RootView: View {
             }
             .navigationTitle("MyMemory")
             .toolbar {
-                // 長い状態 (例: 無料枠の上限) でも途切れず読めるよう、縮小と 2 行を許す
-                ToolbarItem(placement: .topBarLeading) {
-                    Text(pipeline.modelStatus).font(.caption2).lineLimit(2).minimumScaleFactor(0.7)
-                        .frame(maxWidth: 150, alignment: .leading)
-                }
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink { ActionItemsView() } label: { Image(systemName: "checklist") }
                         .accessibilityLabel("決定事項・TODO")
