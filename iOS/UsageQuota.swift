@@ -6,6 +6,8 @@ enum PlanConfig {
     static let proMonthlyID = "com.fatshin.mymemory.pro.monthly"
     /// 無料で文字起こしできる 1 日あたりの長さ。
     static let freeDailySeconds: TimeInterval = 30 * 60
+    /// 初回起動から文字起こしを無制限に使える日数 (購入なし・登録なし)。過ぎたら 1 日の無料枠に戻る。
+    static let freeTrialDays = 30
     /// 有効期限を過ぎても有料として扱う猶予。更新の確認が通信不通で遅れても、払っている人を止めないため。
     static let renewalGrace: TimeInterval = 3 * 24 * 3600
     /// 利用規約 (Apple の標準 EULA)。
@@ -47,6 +49,43 @@ enum Entitlement {
     static var isProNow: Bool { isPro(expiresAt: cachedExpiry, now: Date()) }
 }
 
+/// 初回起動からの無料体験。開始日は Keychain に保存し (アプリを入れ直しても再開しない)、
+/// 同期的に読めるよう UserDefaults にも写す。Keychain との同期は `FreeTrialStore` (アプリ側) が行う。
+enum FreeTrial {
+    static let defaultsKey = "freeTrialStartedAt"
+
+    /// 体験の終わり。日数は 24 時間単位で数える (夏時間・時差の変更で残り日数がずれないように)。
+    /// 開始日が未来になっている場合 (時計の変更) は、起動時に `FreeTrialStore` が今へ書き直す。
+    static func endDate(startedAt: Date?, now: Date, days: Int = PlanConfig.freeTrialDays) -> Date? {
+        guard let startedAt else { return nil }
+        return startedAt.addingTimeInterval(TimeInterval(days) * 86_400)
+    }
+
+    static func isActive(startedAt: Date?, now: Date, days: Int = PlanConfig.freeTrialDays) -> Bool {
+        guard let end = endDate(startedAt: startedAt, now: now, days: days) else { return false }
+        return now < end
+    }
+
+    /// 残り日数 (切り上げ)。体験中でなければ 0。
+    static func daysLeft(startedAt: Date?, now: Date, days: Int = PlanConfig.freeTrialDays) -> Int {
+        guard let end = endDate(startedAt: startedAt, now: now, days: days), now < end else { return 0 }
+        return min(days, Int((end.timeIntervalSince(now) / 86_400).rounded(.up)))
+    }
+
+    static var cachedStart: Date? {
+        get {
+            let t = UserDefaults.standard.double(forKey: defaultsKey)
+            return t > 0 ? Date(timeIntervalSince1970: t) : nil
+        }
+        set {
+            if let newValue { UserDefaults.standard.set(newValue.timeIntervalSince1970, forKey: defaultsKey) }
+            else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+        }
+    }
+
+    static var isActiveNow: Bool { isActive(startedAt: cachedStart, now: Date()) }
+}
+
 /// 無料枠の使用量。端末の日付ごとに数え、文字起こしに成功した分だけ足す。
 struct UsageQuota: Equatable, Codable {
     var day: String
@@ -84,10 +123,13 @@ struct UsageQuota: Equatable, Codable {
 
     /// 今いま文字起こしを始めてよいか (Pipeline とバックグラウンドから同期的に呼ぶ)。
     static func allowsNow(now: Date = Date()) -> Bool {
-        canTranscribe(isPro: Entitlement.isProNow, used: stored.used(today: dayKey(now)))
+        canTranscribe(isPro: Entitlement.isProNow || FreeTrial.isActive(startedAt: FreeTrial.cachedStart, now: now),
+                      used: stored.used(today: dayKey(now)))
     }
 
     static func record(_ seconds: TimeInterval, now: Date = Date()) {
+        // 体験中の分は無料枠に数えない (体験が終わった日に、その日の無料枠が最初から使えるように)
+        guard !FreeTrial.isActive(startedAt: FreeTrial.cachedStart, now: now) else { return }
         stored = stored.adding(seconds, today: dayKey(now))
     }
 

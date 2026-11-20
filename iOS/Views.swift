@@ -203,7 +203,13 @@ struct SettingsView: View {
                     if store.isPro {
                         Label("Pro を利用中 (文字起こしの時間制限なし)", systemImage: "checkmark.seal")
                     } else {
-                        Text("無料プラン: 文字起こしは1日\(Int(PlanConfig.freeDailySeconds / 60))分まで").font(.footnote)
+                        let left = FreeTrial.daysLeft(startedAt: FreeTrial.cachedStart, now: Date())
+                        if left > 0 {
+                            Label("無料体験中: あと\(left)日は文字起こしの時間制限なし", systemImage: "gift")
+                            Text("体験が終わると、文字起こしは1日\(Int(PlanConfig.freeDailySeconds / 60))分までになります").font(.footnote)
+                        } else {
+                            Text("無料プラン: 文字起こしは1日\(Int(PlanConfig.freeDailySeconds / 60))分まで").font(.footnote)
+                        }
                         Button("Pro にする / 購入を復元") { showPaywall = true }
                     }
                 }

@@ -8,6 +8,8 @@ struct MyMemoryApp: App {
     @StateObject private var store: Store
 
     init() {
+        // 文字起こしの可否判定より前に、無料体験の開始日を確定させる
+        FreeTrialStore.ensureStarted()
         let c = try! ModelContainer(for: Recording.self)
         container = c
         let p = Pipeline(context: c.mainContext)

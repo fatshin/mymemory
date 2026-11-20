@@ -40,7 +40,7 @@ NoGo条件: 8時間で欠番あり、または電池消費 > 60%。その場合�
 - 詳細・根拠・未検証事項は `specs/features/power-saving/plan.md` (ローカル保持)。
 
 ## 課金
-- 月額サブスクリプション `com.fatshin.mymemory.pro.monthly` (480 円、日本)。無料は文字起こし 1 日 30 分。値は `iOS/UsageQuota.swift` の `PlanConfig` に集約。
+- 月額サブスクリプション `com.fatshin.mymemory.pro.monthly` (480 円、日本)。初回起動から 30 日間は文字起こし無制限 (購入・登録なし、開始日は Keychain に保存し入れ直しで再開しない)。その後の無料は文字起こし 1 日 30 分。値は `iOS/UsageQuota.swift` の `PlanConfig` に集約。
 - プライバシーポリシー: https://fatshin.github.io/mymemory-legal/
 
 ## TestFlight

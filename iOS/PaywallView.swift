@@ -13,6 +13,12 @@ struct PaywallView: View {
                 Text("MyMemory Pro").font(.largeTitle.bold())
                 Label("文字起こしの時間制限なし (無料は1日\(Int(PlanConfig.freeDailySeconds / 60))分まで)", systemImage: "waveform")
                 Label("無料枠を超えて残っている録音も、翌日を待たずに文字起こし", systemImage: "tray.full")
+                let left = FreeTrial.daysLeft(startedAt: FreeTrial.cachedStart, now: Date())
+                if left > 0 {
+                    // App Store の無料トライアルではない (購入しない限り課金されない) ことを明記する
+                    Text("いまは無料体験中です (あと\(left)日)。体験中は購入しなくても文字起こしの時間制限はなく、自動で課金されることもありません。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 Text("サブスクリプションは期間終了の24時間前までに解約しない限り自動で更新されます。解約は設定アプリの「サブスクリプション」から行えます。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
