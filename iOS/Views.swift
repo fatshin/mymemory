@@ -64,7 +64,11 @@ struct RootView: View {
             }
             .navigationTitle("MyMemory")
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Text(pipeline.modelStatus).font(.caption2) }
+                // 長い状態 (例: 無料枠の上限) でも途切れず読めるよう、縮小と 2 行を許す
+                ToolbarItem(placement: .topBarLeading) {
+                    Text(pipeline.modelStatus).font(.caption2).lineLimit(2).minimumScaleFactor(0.7)
+                        .frame(maxWidth: 150, alignment: .leading)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink { ActionItemsView() } label: { Image(systemName: "checklist") }
                         .accessibilityLabel("決定事項・TODO")
@@ -80,12 +84,23 @@ struct RootView: View {
 
 private struct Row: View {
     let rec: Recording
+
+    /// 保存値 (英語) はそのままに、表示だけ日本語にする。
+    static func statusLabel(_ raw: String) -> String {
+        switch raw {
+        case "pending": return "待機中"
+        case "transcribing": return "文字起こし中"
+        case "done": return "完了"
+        case "failed": return "失敗"
+        default: return raw
+        }
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(rec.startedAt, format: .dateTime.month().day().hour().minute()).font(.headline)
                 Spacer()
-                Text(rec.statusRaw).font(.caption).foregroundStyle(.secondary)
+                Text(Self.statusLabel(rec.statusRaw)).font(.caption).foregroundStyle(.secondary)
             }
             Text("\(Int(rec.duration / 60))分").font(.caption)
             if let t = rec.transcript, !t.isEmpty {
