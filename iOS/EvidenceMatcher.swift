@@ -84,24 +84,24 @@ enum EvidenceMatcher {
         let whole = String(normalize(sentence))
         let hedges = ["かも", "ほうがいい", "方がいい", "たほうが", "おいおい", "検討", "たら", "れば", "かな", "でしょう", "だろう", "ようかな", "ようか", "ろうか", "たい", "ないと"]
         if hedges.contains(where: { whole.contains($0) }) { return false }
-        // 問いかけ (「金曜までに送れる？」) は約束ではない
-        if sentence.hasSuffix("？") { return false }
+        // 問いかけ (「金曜までに送れる？」「送りますよね」) は約束ではない
+        if sentence.hasSuffix("？") || String(normalize(sentence)).hasSuffix("よね") { return false }
         let lastClause = sentence.split(whereSeparator: { "、,，".contains($0) }).last.map(String.init) ?? sentence
         let last = stripFinalParticles(String(normalize(lastClause)))
         // 問いかけ・過去の報告・事実の説明・否定で終わる節は約束ではない (「〜する予定です」は除く)
         let nonPromiseEndings = ["ますか", "ました", "でした", "です", "ません", "だった"]
-        if nonPromiseEndings.contains(where: { last.hasSuffix($0) }), !last.hasSuffix("予定です") { return false }
-        let commitments = ["ておく", "ておき", "とく", "ておこう", "とこう", "やる", "やろう", "しよう", "までに", "ておいて", "といて", "お願いします", "引き受け", "担当します", "予定です"]
+        if nonPromiseEndings.contains(where: { last.hasSuffix($0) }), !last.hasSuffix("る予定です") { return false }
+        let commitments = ["ておく", "ておき", "とく", "ておこう", "とこう", "やる", "やろう", "しよう", "までに", "ておいて", "といて", "お願いします", "引き受け", "担当します", "る予定です"]
         if commitments.contains(where: { last.contains($0) }) { return true }
         // 「〜します」「〜送ります」のような意思の「ます」だけを約束とみなす (「始まります」「あります」は予定や事実)
-        let nonVolitional = ["まります", "なります", "あります", "ています", "でいます", "ございます", "られます", "かかります", "思います"]
+        let nonVolitional = ["まります", "なります", "あります", "ています", "でいます", "ございます", "られます", "かります", "思います", "がいます", "違います", "おります"]
         return last.hasSuffix("ます") && !nonVolitional.contains(where: { last.hasSuffix($0) })
     }
 
     /// 文末の「ね」「よ」などを外す (「送りますね」「送りましたよ」を語尾で正しく判定するため)。
     static func stripFinalParticles(_ s: String) -> String {
         var t = s
-        let particles = ["よね", "けど", "から", "ので", "ね", "よ", "わ", "ー", "〜"]
+        let particles = ["けど", "から", "ので", "ね", "よ", "わ", "ー", "ｰ", "〜", "~"]
         var changed = true
         while changed {
             changed = false
