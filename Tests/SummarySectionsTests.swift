@@ -138,4 +138,21 @@ final class SummarySectionsTests: XCTestCase {
         XCTAssertTrue(SummarySections.parse("").isEmpty)
         XCTAssertTrue(SummarySections.parse("【決定事項】\n- 決定事項はなし").isEmpty)
     }
+
+    /// 1日の振り返りの形式。【気づき】の分析が TODO に混ざらない。
+    func testDayReflectionHeadings() {
+        let s = """
+        【1日の流れ】
+        - 朝: 田中さんと価格の相談
+        【決定事項】
+        - 月額480円で出す
+        【TODO】
+        - 審査用の画像を撮る (本人 / 金曜)
+        【気づき】
+        - 価格の話が3回出た (9:05, 13:10, 17:40)。次は結論を先に決めるとよい
+        """
+        let r = SummarySections.parse(s)
+        XCTAssertEqual(r.decisions, ["月額480円で出す"])
+        XCTAssertEqual(r.todos, ["審査用の画像を撮る (本人 / 金曜)"])
+    }
 }

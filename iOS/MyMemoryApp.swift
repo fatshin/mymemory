@@ -13,6 +13,7 @@ struct MyMemoryApp: App {
         _pipeline = StateObject(wrappedValue: p)
         // アプリ起動の完了前に登録する必要がある
         BackgroundTranscribe.register(pipeline: p)
+        p.continuedRegistered = BackgroundTranscribe.registerContinued(pipeline: p)
         MarkdownFile.removeLeftovers()
     }
 

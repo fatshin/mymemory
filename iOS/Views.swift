@@ -34,6 +34,21 @@ struct RootView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
+                if pipeline.waitingForPower && pipeline.pendingCount > 0 {
+                    Section {
+                        Button {
+                            pipeline.startNow()
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("今すぐ文字起こし (\(pipeline.pendingCount)件)").font(.subheadline.bold())
+                                Text("画面を閉じても続けて処理します。電池残量が\(Int(PowerPolicy.minimumLevelUserInitiated * 100))%以上のときに使えます").font(.caption)
+                            }
+                        }
+                    }
+                }
+                if let note = pipeline.continuedNote {
+                    Section { Text(note).font(.caption).foregroundStyle(.orange) }
+                }
                 ForEach(days, id: \.day) { group in
                     Section {
                         ForEach(group.items) { rec in
@@ -204,7 +219,9 @@ extension Recording {
 }
 
 struct SettingsView: View {
-    @State private var key = Keychain.get(Summarizer.keyName) ?? ""
+    @State private var provider = Summarizer.provider
+    @State private var keys: [RemoteProvider: String] = Dictionary(uniqueKeysWithValues: RemoteProvider.allCases.map { ($0, Keychain.get($0.keyName) ?? "") })
+    @State private var models: [RemoteProvider: String] = Dictionary(uniqueKeysWithValues: RemoteProvider.allCases.map { ($0, UserDefaults.standard.string(forKey: Summarizer.modelKey($0)) ?? "") })
     @AppStorage(Summarizer.remoteAllowedKey) private var remoteAllowed = false
     @AppStorage(RetentionPolicy.key) private var retentionDays = 0
     @EnvironmentObject var pipeline: Pipeline
@@ -222,12 +239,29 @@ struct SettingsView: View {
                     }
                 }
                 Section {
-                    Toggle("文字起こしテキストを\(Summarizer.remoteRecipient)に送信して要約する", isOn: $remoteAllowed)
-                    SecureField("Anthropic APIキー (sk-ant-…)", text: $key)
+                    Picker("送信先", selection: $provider) {
+                        ForEach(RemoteProvider.allCases) { Text($0.displayName).tag($0) }
+                    }
+                    // 送信先を変えたら、許可を取り直す (許可した相手と実際の送信先をずらさない)
+                    .onChange(of: provider) { _, p in
+                        Summarizer.provider = p
+                        remoteAllowed = false
+                    }
+                    Toggle("文字起こしテキストを\(provider.recipient)に送信して要約する", isOn: $remoteAllowed)
+                        // 許可した相手を記録する (Summarizer は記録した相手にしか送らない)
+                        .onChange(of: remoteAllowed) { _, on in
+                            UserDefaults.standard.set(on ? provider.rawValue : nil, forKey: Summarizer.remoteAllowedProviderKey)
+                        }
+                    SecureField("\(provider.displayName) APIキー (\(provider.keyPlaceholder))", text: Binding(
+                        get: { keys[provider] ?? "" }, set: { keys[provider] = $0 }))
+                    TextField("モデル (空欄は \(provider.defaultModel))", text: Binding(
+                        get: { models[provider] ?? "" }, set: { models[provider] = $0 }))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
                 } header: {
                     Text("外部への送信 (任意・既定はオフ)")
                 } footer: {
-                    Text("オンにすると、端末内で要約できないときに限り、文字起こしテキストを\(Summarizer.remoteRecipient)へ送ります。音声は送りません。APIキーはこの端末のKeychainにのみ保存します。")
+                    Text("オンにすると、端末内で要約できないときに限り、文字起こしテキストを\(provider.recipient)へ送ります。音声は送りません。APIキーはこの端末のKeychainにのみ保存します。送信先を変えると許可はオフに戻ります。モデル名は各社の更新に合わせて変更してください。")
                 }
                 Section {
                     Picker("古い音声を自動で削除", selection: $retentionDays) {
@@ -246,7 +280,22 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("設定")
-            .toolbar { Button("保存") { Keychain.set(key, for: Summarizer.keyName); dismiss() } }
+            // 送信先ごとの許可に変える前の許可は、表示だけ有効に見えて送らない状態になるため、表示も切っておく
+            .onAppear {
+                if remoteAllowed, UserDefaults.standard.string(forKey: Summarizer.remoteAllowedProviderKey) != provider.rawValue {
+                    remoteAllowed = false
+                }
+            }
+            .toolbar {
+                Button("保存") {
+                    Summarizer.provider = provider
+                    for p in RemoteProvider.allCases {
+                        Keychain.set((keys[p] ?? "").trimmingCharacters(in: .whitespacesAndNewlines), for: p.keyName)
+                        UserDefaults.standard.set((models[p] ?? "").trimmingCharacters(in: .whitespacesAndNewlines), forKey: Summarizer.modelKey(p))
+                    }
+                    dismiss()
+                }
+            }
         }
     }
 }

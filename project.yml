@@ -38,7 +38,8 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIBackgroundModes: [processing]
-        BGTaskSchedulerPermittedIdentifiers: [com.fatshin.mymemory.transcribe]
+        # 継続タスク (利用者の操作で開始) の識別子。ワイルドカード表記の登録可否は文書で確定できないため、厳密一致も置く
+        BGTaskSchedulerPermittedIdentifiers: [com.fatshin.mymemory.transcribe, com.fatshin.mymemory.continued.transcribe, com.fatshin.mymemory.continued.*]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.fatshin.mymemory
@@ -70,7 +71,7 @@ targets:
     type: bundle.unit-test
     platform: iOS
     # 電力判定は UIKit 非依存の純粋関数のため、ソースを直接取り込んでテストする。
-    sources: [Tests, iOS/PowerPolicy.swift, iOS/RetryPolicy.swift, iOS/TextChunker.swift, iOS/ExportFormatter.swift, iOS/RetentionPolicy.swift, iOS/SummarySections.swift, iOS/TranscriptCleaner.swift, Shared/RecoveryBudget.swift, Shared/AutoResumePolicy.swift, Shared/ChunkWriter.swift]
+    sources: [Tests, iOS/PowerPolicy.swift, iOS/ContinuedProgress.swift, iOS/RemoteProvider.swift, iOS/RetryPolicy.swift, iOS/TextChunker.swift, iOS/ExportFormatter.swift, iOS/RetentionPolicy.swift, iOS/SummarySections.swift, iOS/TranscriptCleaner.swift, Shared/RecoveryBudget.swift, Shared/AutoResumePolicy.swift, Shared/ChunkWriter.swift]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.fatshin.mymemory.tests
