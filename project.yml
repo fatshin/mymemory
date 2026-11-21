@@ -71,7 +71,7 @@ targets:
     type: bundle.unit-test
     platform: iOS
     # 電力判定は UIKit 非依存の純粋関数のため、ソースを直接取り込んでテストする。
-    sources: [Tests, iOS/PowerPolicy.swift, iOS/ContinuedProgress.swift, iOS/RemoteProvider.swift, iOS/RetryPolicy.swift, iOS/TextChunker.swift, iOS/ExportFormatter.swift, iOS/RetentionPolicy.swift, iOS/SummarySections.swift, iOS/TranscriptCleaner.swift, Shared/RecoveryBudget.swift, Shared/AutoResumePolicy.swift, Shared/ChunkWriter.swift]
+    sources: [Tests, iOS/PowerPolicy.swift, iOS/ContinuedProgress.swift, iOS/RemoteProvider.swift, iOS/RetryPolicy.swift, iOS/TextChunker.swift, iOS/ExportFormatter.swift, iOS/RetentionPolicy.swift, iOS/SummarySections.swift, iOS/EvidenceMatcher.swift, iOS/TranscriptCleaner.swift, Shared/RecoveryBudget.swift, Shared/AutoResumePolicy.swift, Shared/ChunkWriter.swift]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.fatshin.mymemory.tests
