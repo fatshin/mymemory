@@ -10,8 +10,6 @@ import WhisperKit
 final class Pipeline: NSObject, ObservableObject {
     @Published var modelStatus = "未ロード"
     @Published var busy = false
-    /// 無料枠の上限で文字起こしを止めている件数 (一覧の案内に使う)。
-    @Published var quotaHeld = 0
 
     private let context: ModelContext
     private let transcriber = Transcriber()
@@ -154,13 +152,6 @@ final class Pipeline: NSObject, ObservableObject {
         return Double(f.length) / f.fileFormat.sampleRate
     }
 
-    /// 有料になったら、無料枠で止めていた文字起こしを再開する。
-    func resumeAfterPurchase() {
-        quotaHeld = 0
-        modelLoadFailures = 0
-        if !queue.isEmpty { startDrain() }
-    }
-
     func retry(_ rec: Recording) {
         rec.statusRaw = "pending"; rec.errorMessage = nil; rec.attempts = 0
         modelLoadFailures = 0
@@ -207,19 +198,9 @@ final class Pipeline: NSObject, ObservableObject {
         busy = true
         defer { busy = false }
         // 実行中にアプリが停止しても夜間の充電時に OS が再開できるよう、保留があるあいだ常に申請しておく
-        // (無料枠の上限で止まっている間は、無駄に起こさないよう申請しない)
-        if !queue.isEmpty, UsageQuota.allowsNow() { BackgroundTranscribe.schedule(needsNetwork: !modelOnDisk) }
-        quotaHeld = 0
+        if !queue.isEmpty { BackgroundTranscribe.schedule(needsNetwork: !modelOnDisk) }
         while !queue.isEmpty, !Task.isCancelled {
             if modelLoadFailures >= Self.maxModelLoadFailures { return }
-            // 試行回数を数える前・モデルを読む前に判定する (上限で止めた録音を失敗扱いにしない)
-            guard UsageQuota.allowsNow() else {
-                quotaHeld = queue.count
-                modelStatus = "無料枠の上限 (\(queue.count)件は明日またはProで文字起こし)"
-                // 無料枠が戻る時刻まではバックグラウンドで起こさない
-                BackgroundTranscribe.schedule(needsNetwork: !modelOnDisk, earliest: UsageQuota.nextReset())
-                return
-            }
             guard canTranscribeNow() else {
                 modelStatus = "充電待ち (\(queue.count)件保留)"
                 BackgroundTranscribe.schedule(needsNetwork: !modelOnDisk)
@@ -239,8 +220,6 @@ final class Pipeline: NSObject, ObservableObject {
                     modelLoaded = true
                     modelLoadFailures = 0
                     modelStatus = "準備完了"
-                    // 長さの情報が欠けていても無料枠を素通りさせない (音声ファイルから実際の長さを取る)
-                    UsageQuota.record(rec.duration > 0 ? rec.duration : Self.audioDuration(rec.fileURL))
                 }
                 rec.transcript = result.text
                 // 文字が残らなかった理由を見えるようにする (文字起こしに成功した見た目にしない)
@@ -313,7 +292,7 @@ final class Transcriber: @unchecked Sendable {
     struct Output: Sendable {
         let text: String
         let level: AudioLevel?
-        /// 無音と判定して Whisper を呼ばなかった (無料枠にも数えない)。
+        /// 無音と判定して Whisper を呼ばなかった。
         let skippedSilent: Bool
 
         var emptyReason: String {

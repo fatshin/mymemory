@@ -1,7 +1,7 @@
 name: MyMemory
 settings:
   base:
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "1.0"
     CURRENT_PROJECT_VERSION: "1"
     ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 options:
@@ -26,8 +26,6 @@ targets:
       - target: MyMemoryWatch
     scheme:
       testTargets: [MyMemoryTests]
-      # 商品を App Store Connect に登録する前に、シミュレータで購入を試すためのローカル設定
-      storeKitConfiguration: StoreKit/MyMemory.storekit
     info:
       path: iOS/Info.plist
       properties:
@@ -72,7 +70,7 @@ targets:
     type: bundle.unit-test
     platform: iOS
     # 電力判定は UIKit 非依存の純粋関数のため、ソースを直接取り込んでテストする。
-    sources: [Tests, iOS/PowerPolicy.swift, iOS/RetryPolicy.swift, iOS/TextChunker.swift, iOS/ExportFormatter.swift, iOS/UsageQuota.swift, iOS/RetentionPolicy.swift, iOS/SummarySections.swift, iOS/TranscriptCleaner.swift, Shared/RecoveryBudget.swift, Shared/AutoResumePolicy.swift, Shared/ChunkWriter.swift]
+    sources: [Tests, iOS/PowerPolicy.swift, iOS/RetryPolicy.swift, iOS/TextChunker.swift, iOS/ExportFormatter.swift, iOS/RetentionPolicy.swift, iOS/SummarySections.swift, iOS/TranscriptCleaner.swift, Shared/RecoveryBudget.swift, Shared/AutoResumePolicy.swift, Shared/ChunkWriter.swift]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.fatshin.mymemory.tests

@@ -19,7 +19,7 @@ enum BackgroundTranscribe {
 
     /// 保留分があるときに呼ぶ。同一 identifier の再申請は置き換えられる。
     /// モデル未取得 (初回) のときだけ通信を要求する。取得済みなら通信なしで実行できる。
-    /// - Parameter earliest: これより前には起こさない (無料枠が戻る時刻など)。
+    /// - Parameter earliest: これより前には起こさない。
     static func schedule(needsNetwork: Bool, earliest: Date? = nil) {
         let request = BGProcessingTaskRequest(identifier: identifier)
         request.requiresExternalPower = true

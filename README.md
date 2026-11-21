@@ -4,9 +4,8 @@ Apple Watch で録音 → iPhone で端末内の文字起こし (日本語, Whis
 
 ## 構成
 - `Watch/` : 録音 (AVAudioEngine を止めずに 10 分ごとにファイルを切り替え、`UIBackgroundModes: audio` で画面消灯中も継続) → WatchConnectivity 転送
-- `iOS/`   : 受信 → SwiftData 保存 → WhisperKit 文字起こし → 要約 (端末内を優先。外部 API は明示的な許可 + API キーがあるときだけ、テキストのみ送信)。決定事項・TODO の一覧 (要約から抽出)、書き出し (Markdown)、初回同意、課金 (StoreKit 2)、古い音声の自動削除 (任意)
+- `iOS/`   : 受信 → SwiftData 保存 → WhisperKit 文字起こし → 要約 (端末内を優先。外部 API は明示的な許可 + API キーがあるときだけ、テキストのみ送信)。決定事項・TODO の一覧 (要約から抽出)、書き出し (Markdown)、初回同意、古い音声の自動削除 (任意)
 - `Shared/`: 転送メタデータキー、録音の区切り (`ChunkWriter`)
-- `StoreKit/MyMemory.storekit`: シミュレータで購入を試すためのローカル設定
 - `project.yml`: XcodeGen 定義
 
 ## セットアップ (Mac)
@@ -41,7 +40,7 @@ NoGo条件: 8時間で欠番あり、または電池消費 > 60%。その場合�
 - 詳細・根拠・未検証事項は `specs/features/power-saving/plan.md` (ローカル保持)。
 
 ## 課金
-- 月額サブスクリプション `com.fatshin.mymemory.pro.monthly` (480 円、日本)。初回起動から 30 日間は文字起こし無制限 (購入・登録なし、開始日は Keychain に保存し入れ直しで再開しない)。その後の無料は文字起こし 1 日 30 分。値は `iOS/UsageQuota.swift` の `PlanConfig` に集約。
+- 無料。アプリ内課金はなく、文字起こしの時間制限もない。
 - プライバシーポリシー: https://fatshin.github.io/mymemory-legal/
 
 ## TestFlight

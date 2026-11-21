@@ -5,8 +5,6 @@ struct RootView: View {
     @EnvironmentObject var pipeline: Pipeline
     @Query(sort: \Recording.startedAt, order: .reverse) private var recordings: [Recording]
     @State private var showSettings = false
-    @State private var showPaywall = false
-    @EnvironmentObject var store: Store
     @State private var query = ""
     @AppStorage(OnboardingView.doneKey) private var onboardingDone = false
 
@@ -29,23 +27,11 @@ struct RootView: View {
     var body: some View {
         NavigationStack {
             List {
-                // 長い状態 (例: 無料枠の上限) も途切れず読めるよう、ツールバーではなく一覧の先頭に全文を出す
+                // 長い状態 (例: 充電待ちの件数) も途切れず読めるよう、ツールバーではなく一覧の先頭に全文を出す
                 if !recordings.isEmpty {
                     Section {
                         Label(pipeline.modelStatus, systemImage: "waveform")
                             .font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
-                if pipeline.quotaHeld > 0 && !store.isPro {
-                    Section {
-                        Button {
-                            showPaywall = true
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("今日の無料枠 (\(Int(PlanConfig.freeDailySeconds / 60))分) を使い切りました").font(.subheadline.bold())
-                                Text("\(pipeline.quotaHeld)件の録音は消えずに残り、明日またはProで文字起こしされます").font(.caption)
-                            }
-                        }
                     }
                 }
                 ForEach(days, id: \.day) { group in
@@ -78,7 +64,6 @@ struct RootView: View {
                 ToolbarItem { Button { showSettings = true } label: { Image(systemName: "gearshape") } }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
-            .sheet(isPresented: $showPaywall) { PaywallView() }
             .fullScreenCover(isPresented: .constant(!onboardingDone)) { OnboardingView() }
         }
     }
@@ -219,8 +204,6 @@ extension Recording {
 }
 
 struct SettingsView: View {
-    @EnvironmentObject var store: Store
-    @State private var showPaywall = false
     @State private var key = Keychain.get(Summarizer.keyName) ?? ""
     @AppStorage(Summarizer.remoteAllowedKey) private var remoteAllowed = false
     @AppStorage(RetentionPolicy.key) private var retentionDays = 0
@@ -229,20 +212,6 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("MyMemory Pro") {
-                    if store.isPro {
-                        Label("Pro を利用中 (文字起こしの時間制限なし)", systemImage: "checkmark.seal")
-                    } else {
-                        let left = FreeTrial.daysLeft(startedAt: FreeTrial.cachedStart, now: Date())
-                        if left > 0 {
-                            Label("無料体験中: あと\(left)日は文字起こしの時間制限なし", systemImage: "gift")
-                            Text("体験が終わると、文字起こしは1日\(Int(PlanConfig.freeDailySeconds / 60))分までになります").font(.footnote)
-                        } else {
-                            Text("無料プラン: 文字起こしは1日\(Int(PlanConfig.freeDailySeconds / 60))分まで").font(.footnote)
-                        }
-                        Button("Pro にする / 購入を復元") { showPaywall = true }
-                    }
-                }
                 Section("要約") {
                     switch OnDeviceSummarizer.status {
                     case .available:
@@ -272,9 +241,11 @@ struct SettingsView: View {
                 } footer: {
                     Text("録音と文字起こしはこの端末内に保存します。自動削除で消すのは文字起こし済みの音声だけで、文字起こしと要約は残ります。録音は詳細画面のメニューから個別に削除できます。")
                 }
+                Section {
+                    Link("プライバシーポリシー", destination: AppLinks.privacy)
+                }
             }
             .navigationTitle("設定")
-            .sheet(isPresented: $showPaywall) { PaywallView() }
             .toolbar { Button("保存") { Keychain.set(key, for: Summarizer.keyName); dismiss() } }
         }
     }
