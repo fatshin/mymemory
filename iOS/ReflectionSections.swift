@@ -89,6 +89,14 @@ extension ReflectionSections {
         return firstItem(in: text, under: nil)
     }
 
+    /// 【概要】の最初の 1 文 (40 字まで)。やることの出どころを示すのに使う。
+    static func overviewSentence(in text: String) -> String? {
+        guard let body = parse(text).first(where: { $0.title == "概要" })?.body,
+              let first = body.components(separatedBy: "。").first?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !first.isEmpty, !isNone(first) else { return nil }
+        return first.count > 40 ? String(first.prefix(40)) + "…" : first + "。"
+    }
+
     /// 末尾の「(OpenAI で要約)」などの注記。どこで処理したかの開示として、本文とは別に表示する。
     static func routeLabel(in text: String) -> String? {
         guard let last = text.components(separatedBy: "\n").last(where: {

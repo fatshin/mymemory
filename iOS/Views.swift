@@ -59,9 +59,9 @@ struct RootView: View {
                     }
                     Section {
                         if home.todos.isEmpty {
-                            Text(home.reflection != nil ? "この日の振り返りに TODO はありません"
-                                 : recordings.contains { $0.summary != nil } ? "直近\(HomeSummary.todoDays)日の要約に TODO はありません"
-                                 : "振り返りを作ると、ここに TODO が並びます")
+                            Text(home.reflection != nil ? "この日の振り返りに、やることはありません"
+                                 : recordings.contains { $0.summary != nil } ? "直近\(HomeSummary.todoDays)日の会話に、やると決めたことはありません"
+                                 : "要約ができると、会話で「やる」と決めたことがここに並びます")
                                 .font(.callout).foregroundStyle(.secondary)
                         }
                         ForEach(home.todos) { t in
@@ -78,7 +78,7 @@ struct RootView: View {
                         }
                     } header: {
                         HStack {
-                            Label("TODO", systemImage: "checklist").font(.subheadline.bold()).foregroundStyle(.primary)
+                            Label("やること", systemImage: "checklist").font(.subheadline.bold()).foregroundStyle(.primary)
                             Spacer()
                             NavigationLink { ActionItemsView() } label: { Text("すべて").font(.caption.bold()) }
                         }
@@ -162,9 +162,13 @@ private struct TodoRow: View {
             Image(systemName: "circle").font(.caption).foregroundStyle(Theme.accentText)
             VStack(alignment: .leading, spacing: 2) {
                 Text(todo.text).font(.callout)
-                if let time = todo.time {
-                    Text(time, format: .dateTime.month().day().hour().minute())
-                        .font(.caption2).foregroundStyle(.secondary)
+                // どの会話から出たかを添える (やることの文だけでは用件が分からないことがあるため)
+                if todo.time != nil || todo.context != nil {
+                    HStack(spacing: 4) {
+                        if let time = todo.time { Text(time, format: .dateTime.month().day().hour().minute()) }
+                        if let context = todo.context { Text(context).lineLimit(1) }
+                    }
+                    .font(.caption2).foregroundStyle(.secondary)
                 }
             }
         }
@@ -382,7 +386,7 @@ struct SettingsView: View {
                         Summarizer.provider = p
                         remoteAllowed = false
                     }
-                    Toggle("文字起こしテキストを\(provider.recipient)に送信して要約する", isOn: $remoteAllowed)
+                    Toggle("文字起こしテキストを\(provider.recipient)に送信して要約する (文字起こしの後に自動で送信)", isOn: $remoteAllowed)
                         // 許可した相手を記録する (Summarizer は記録した相手にしか送らない)
                         .onChange(of: remoteAllowed) { _, on in
                             UserDefaults.standard.set(on ? provider.rawValue : nil, forKey: Summarizer.remoteAllowedProviderKey)

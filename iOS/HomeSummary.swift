@@ -14,6 +14,8 @@ struct HomeSummary {
         let recordingID: UUID?
         let time: Date?
         let text: String
+        /// どの会話から出たやることか (元の要約の概要の 1 文目)。
+        var context: String? = nil
     }
 
     static let todoDays = 7
@@ -68,8 +70,9 @@ struct HomeSummary {
             for rec in recordings where rec.startedAt >= cutoff {
                 guard let s = rec.summary else { continue }
                 let parsed = SummarySections.parse(s)
+                let context = ReflectionSections.overviewSentence(in: s)
                 for (i, t) in parsed.todos.enumerated() where seen.insert(t).inserted {
-                    todos.append(Todo(id: "\(rec.id)-\(i)", recordingID: rec.id, time: rec.startedAt, text: t))
+                    todos.append(Todo(id: "\(rec.id)-\(i)", recordingID: rec.id, time: rec.startedAt, text: t, context: context))
                 }
             }
             // 決定事項は表示する日のもの (7日より前の日を表示していても拾う)

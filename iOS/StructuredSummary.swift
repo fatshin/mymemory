@@ -19,7 +19,7 @@ struct RecordingDigest {
 struct DigestTodo {
     @Guide(description: "やると言った人の名前。分からなければ空文字")
     var owner: String
-    @Guide(description: "やることを「〜する」で終わる短い日本語で")
+    @Guide(description: "やることを、あとから一覧だけを読んでも分かるように、何の件で・誰に・何をどうするかを補って「〜する」で終わる日本語で。例: B社向けの見積書を山田さんにメールで送る。「送る」「確認する」「対応する」だけにしない")
     var action: String
     @Guide(description: "期限。発言に無ければ空文字。発言に無い期限を作らない")
     var due: String

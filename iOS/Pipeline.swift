@@ -42,6 +42,9 @@ final class Pipeline: NSObject, ObservableObject {
     private var continuedStarted = false
     /// 継続タスクへ進捗 (音声の秒数) を報告する先。継続タスクが動いている間だけ持つ。
     private var progressSink: Progress?
+    /// 自動要約の失敗回数 (録音ごと、アプリ起動中だけ保持) と、最後に自動要約を始めた時刻。
+    private var autoSummaryFailures: [UUID: Int] = [:]
+    private var lastAutoSummaryRun: Date?
     private var runFinishedSeconds: Double = 0
     private var currentFileSeconds: Double = 0
     /// 実行中の drain。前面・通知・バックグラウンドのどこから呼んでも 1 本だけ動く。
@@ -139,7 +142,15 @@ final class Pipeline: NSObject, ObservableObject {
             }
         }
         try? context.save()
-        if !queue.isEmpty { startDrain() }
+        // 保留が無くても、要約の無い文字起こしがあれば自動要約のために処理を始める
+        if !queue.isEmpty || hasUnsummarized() { startDrain() }
+    }
+
+    private func hasUnsummarized() -> Bool {
+        var d = FetchDescriptor<Recording>(
+            predicate: #Predicate { $0.statusRaw == "done" && $0.summary == nil && $0.transcript != nil && $0.transcript != "" })
+        d.fetchLimit = 1
+        return ((try? context.fetchCount(d)) ?? 0) > 0
     }
 
     private func enqueue(_ id: UUID) {
@@ -317,6 +328,10 @@ final class Pipeline: NSObject, ObservableObject {
                     ? "電池残量が\(Int(PowerPolicy.minimumLevelUserInitiated * 100))%未満のため停止 (\(queue.count)件保留)"
                     : "充電待ち (\(queue.count)件保留)"
                 BackgroundTranscribe.schedule(needsNetwork: !modelOnDisk)
+                // 文字起こしは充電待ちでも、済んだ分の要約は外部 API なら進められる
+                let status = modelStatus
+                await summarizeBacklog()
+                modelStatus = status
                 return
             }
             // 継続タスクの進捗の分母は、新しく届いた録音も含めて取り直す
@@ -399,6 +414,62 @@ final class Pipeline: NSObject, ObservableObject {
             }
             try? context.save()
         }
+        if !Task.isCancelled { await summarizeBacklog() }
+    }
+
+    /// 1 回の処理で自動要約する録音の上限 (外部 API の呼び出し回数と時間を抑える)。
+    static let autoSummaryLimit = 20
+
+    /// 自動要約に続けて失敗した録音は、アプリを再起動するまで自動では試さない (外部 API への再送を繰り返さない)。
+    static let autoSummaryMaxFailures = 2
+    /// 電源の通知のたびに走らないよう、自動要約の開始に間隔を空ける。
+    static let autoSummaryInterval: TimeInterval = 120
+
+    /// 文字起こし済みで要約の無い録音を、新しい順に要約して保存する (最初の画面とやることの一覧に使う)。
+    /// 外部 API は利用者が送信を許可したときだけ (Summarizer が経路を決める)。端末内モデルは電力を使うため充電中だけ。
+    /// 画面を閉じても続く継続タスクの中では行わない (進捗を送れず、OS に止められるのを避ける)。
+    private func summarizeBacklog() async {
+        guard progressSink == nil else { return }
+        if let last = lastAutoSummaryRun, Date().timeIntervalSince(last) < Self.autoSummaryInterval { return }
+        guard let firstRoute = try? Summarizer.currentRoute(), autoSummaryPowerOK(firstRoute) else { return }
+        lastAutoSummaryRun = Date()
+        var d = FetchDescriptor<Recording>(
+            predicate: #Predicate { $0.statusRaw == "done" && $0.summary == nil && $0.transcript != nil && $0.transcript != "" },
+            sortBy: [SortDescriptor(\.startedAt, order: .reverse)])
+        d.fetchLimit = Self.autoSummaryLimit
+        guard let recs = try? context.fetch(d) else { return }
+        let targets = recs.filter { (autoSummaryFailures[$0.id] ?? 0) < Self.autoSummaryMaxFailures }
+        guard !targets.isEmpty else { return }
+        // 中断・取り消しでも「要約を作成中」の表示を残さない
+        defer { if modelStatus.hasPrefix("要約を作成中") { modelStatus = "準備完了" } }
+        var consecutiveFailures = 0
+        for (i, rec) in targets.enumerated() {
+            if Task.isCancelled || !rec.isAlive { continue }
+            // 許可の取り消し・送信先の切り替え・充電の抜き差しを 1 件ごとに反映する
+            guard let route = try? Summarizer.currentRoute(), route == firstRoute, autoSummaryPowerOK(route) else { return }
+            guard let t = rec.transcript, !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            modelStatus = "要約を作成中 \(i + 1) / \(targets.count)"
+            do {
+                let result = try await Summarizer.summarize(t, route: route)
+                consecutiveFailures = 0
+                // 待つ間に削除・文字起こし直し・手動要約された録音には上書きしない
+                if rec.isAlive, rec.transcript == t, rec.summary == nil {
+                    rec.summary = result.labeled
+                    try? context.save()
+                }
+            } catch {
+                if Task.isCancelled { return }
+                autoSummaryFailures[rec.id, default: 0] += 1
+                consecutiveFailures += 1
+                // 続けて失敗するのは通信断・キー無効などの共通の原因が多い。残りは次回に回す
+                if consecutiveFailures >= 2 { return }
+            }
+        }
+    }
+
+    /// 端末内モデルは充電中だけ。外部 API は端末の負荷が小さいので電源を問わない (送信の許可は経路の判定で確認済み)。
+    private func autoSummaryPowerOK(_ route: SummaryRoute) -> Bool {
+        route == .remote || PowerPolicy.shouldProofread(charge: currentCharge(), isSimulator: isSimulator)
     }
 }
 

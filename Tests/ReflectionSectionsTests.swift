@@ -108,3 +108,12 @@ final class NoneAndLabelTests: XCTestCase {
         XCTAssertTrue(r.todos.isEmpty)
     }
 }
+
+final class OverviewContextTests: XCTestCase {
+    /// やることの出どころとして、概要の 1 文目だけを添える。
+    func testOverviewSentence() {
+        XCTAssertEqual(ReflectionSections.overviewSentence(in: "【概要】\n田中さんとB社の見積もりについて話した。来週送る。\n【要点】\n- A"),
+                       "田中さんとB社の見積もりについて話した。")
+        XCTAssertNil(ReflectionSections.overviewSentence(in: "【要点】\n- A"))
+    }
+}
