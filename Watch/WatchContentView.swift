@@ -3,6 +3,7 @@ import SwiftUI
 struct WatchContentView: View {
     @EnvironmentObject var recorder: WatchRecorder
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage(WatchRecorder.autoStartKey) private var autoStart = true
 
     var body: some View {
         ScrollView {
@@ -18,11 +19,11 @@ struct WatchContentView: View {
                 if recorder.isPaused {
                     Button("再開") { recorder.resume() }
                         .tint(.green)
-                    Button("停止") { recorder.stop() }
+                    Button("停止") { recorder.userStop() }
                         .tint(.red)
                 } else {
                     Button(recorder.isRecording ? "停止" : "開始") {
-                        recorder.isRecording ? recorder.stop() : recorder.start()
+                        recorder.isRecording ? recorder.userStop() : recorder.start()
                     }
                     .tint(recorder.isRecording ? .red : .green)
                 }
@@ -36,10 +37,17 @@ struct WatchContentView: View {
                 if let err = recorder.lastError {
                     Text(err).font(.caption2).foregroundStyle(.orange)
                 }
+                Toggle("開いたら自動で録音", isOn: $autoStart)
+                    .font(.caption2)
+                Text("停止ボタンで止めた日は、開いても自動では始めません")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
         }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { recorder.checkEngine() }
+        // initial: true で起動直後 (OS に終了されたあとの再起動を含む) にも判定する
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            guard phase == .active else { return }
+            recorder.checkEngine()  // 中断からの再開を先に試す
+            recorder.autoStartIfNeeded()
         }
     }
 

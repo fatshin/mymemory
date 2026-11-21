@@ -33,3 +33,15 @@ struct AutoResumeLimiter: Equatable {
         return true
     }
 }
+
+/// Watch のアプリを開いたとき (前面に来たとき) に、録音を自動で始めてよいかの判定。
+/// watchOS では録音を前面でしか始められないため、「開いたら始まる」を自動開始とする。
+/// 利用者が停止ボタンで止めた日は、その日のうちは自動で始めない (確認のために開いただけで録音が始まらないように)。
+enum AutoStartPolicy {
+    static func shouldStart(enabled: Bool, isActive: Bool, isBatteryLow: Bool,
+                            lastManualStop: Date?, now: Date, calendar: Calendar = .current) -> Bool {
+        guard enabled, !isActive, !isBatteryLow else { return false }
+        if let stop = lastManualStop, calendar.isDate(stop, inSameDayAs: now) { return false }
+        return true
+    }
+}
