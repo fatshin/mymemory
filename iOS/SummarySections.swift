@@ -43,6 +43,8 @@ enum SummarySections {
         for rawLine in unified.components(separatedBy: .newlines) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             if line.isEmpty { lastWasItem = false; continue }
+            // 末尾の「(端末内で要約)」などの注記は項目ではない
+            if ReflectionSections.isRouteLabel(line) { continue }
             // 区切り線 (---、***) は無視する
             if line.allSatisfy({ "-*_=ー─".contains($0) }) { continue }
 

@@ -21,6 +21,7 @@ struct MyMemoryApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(pipeline)
+                .tint(Theme.accent)
         }
         .modelContainer(container)
     }

@@ -7,6 +7,10 @@ struct RootView: View {
     @State private var showSettings = false
     @State private var query = ""
     @AppStorage(OnboardingView.doneKey) private var onboardingDone = false
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var home: HomeSummary?
+    /// 保存済みの振り返りを読み直す合図 (生成・日付の変わり目・設定を閉じたとき)。
+    @State private var refreshTick = 0
 
     private var days: [(day: Date, items: [Recording])] {
         // 文字起こしと要約の両方を検索する
@@ -24,59 +28,125 @@ struct RootView: View {
             .sorted { $0.startedAt < $1.startedAt }
     }
 
+    /// 録音・要約・文字起こしの増減で変わる軽い値。最初の表示の組み立てはこれが変わったときだけ行う。
+    private var homeKey: Int {
+        var h = Hasher()
+        h.combine(refreshTick)
+        h.combine(Calendar.current.startOfDay(for: Date()))
+        for rec in recordings.prefix(200) {
+            // 本文全体ではなく長さで変化を見る (再描画のたびに全文をハッシュしない)
+            h.combine(rec.id); h.combine(rec.summary?.count); h.combine(rec.transcript?.count); h.combine(rec.statusRaw)
+        }
+        return h.finalize()
+    }
+
+    /// 設定を開く必要がある状態 (充電待ち、継続処理の注意)。設定アイコンに印を付ける。
+    private var needsAttention: Bool {
+        (pipeline.waitingForPower && pipeline.pendingCount > 0) || pipeline.continuedNote != nil
+    }
+
     var body: some View {
         NavigationStack {
             List {
-                // 長い状態 (例: 充電待ちの件数) も途切れず読めるよう、ツールバーではなく一覧の先頭に全文を出す
-                if !recordings.isEmpty {
+                // 最初の表示は「まとめ」と「TODO」を 1 画面で読めることを優先する。
+                // 文字起こしの処理状況や充電待ちは設定画面に置く (毎回見る情報ではないため)
+                if let home, query.isEmpty {
                     Section {
-                        Label(pipeline.modelStatus, systemImage: "waveform")
-                            .font(.footnote).foregroundStyle(.secondary)
+                        TodayCard(home: home) {
+                            DayReflectionView(day: home.day, items: home.items)
+                        }
+                        .listRowInsets(EdgeInsets())
                     }
-                }
-                if pipeline.waitingForPower && pipeline.pendingCount > 0 {
                     Section {
-                        Button {
-                            pipeline.startNow()
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("今すぐ文字起こし (\(pipeline.pendingCount)件)").font(.subheadline.bold())
-                                Text("画面を閉じても続けて処理します。電池残量が\(Int(PowerPolicy.minimumLevelUserInitiated * 100))%以上のときに使えます").font(.caption)
+                        if home.todos.isEmpty {
+                            Text(home.reflection != nil ? "この日の振り返りに TODO はありません"
+                                 : recordings.contains { $0.summary != nil } ? "直近\(HomeSummary.todoDays)日の要約に TODO はありません"
+                                 : "振り返りを作ると、ここに TODO が並びます")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                        ForEach(home.todos) { t in
+                            if let id = t.recordingID {
+                                NavigationLink(value: id) { TodoRow(todo: t) }
+                            } else {
+                                TodoRow(todo: t)
                             }
                         }
+                        if home.todoOverflow > 0 {
+                            NavigationLink { ActionItemsView() } label: {
+                                Text("ほか \(home.todoOverflow) 件").font(.callout).foregroundStyle(Theme.accentText)
+                            }
+                        }
+                    } header: {
+                        HStack {
+                            Label("TODO", systemImage: "checklist").font(.subheadline.bold()).foregroundStyle(.primary)
+                            Spacer()
+                            NavigationLink { ActionItemsView() } label: { Text("すべて").font(.caption.bold()) }
+                        }
+                        .textCase(nil)
                     }
-                }
-                if let note = pipeline.continuedNote {
-                    Section { Text(note).font(.caption).foregroundStyle(.orange) }
                 }
                 ForEach(days, id: \.day) { group in
                     Section {
                         ForEach(group.items) { rec in
-                            NavigationLink(value: rec.id) { Row(rec: rec) }
+                            NavigationLink(value: rec.id) { Row(rec: rec, preferTranscript: !query.isEmpty) }
                         }
                     } header: {
                         HStack {
-                            Text(group.day, format: .dateTime.year().month().day().weekday())
+                            Text(group.day, format: .dateTime.month().day().weekday())
+                                .font(.subheadline.bold()).foregroundStyle(.primary)
                             Spacer()
                             // 検索中でも 1 日分は全件を渡す (書き出しで録音が黙って欠けないように)
-                            NavigationLink("振り返り") { DayReflectionView(day: group.day, items: allItems(on: group.day)) }
-                                .font(.caption)
+                            NavigationLink { DayReflectionView(day: group.day, items: allItems(on: group.day)) } label: {
+                                Label("振り返り", systemImage: "sparkles").font(.caption.bold())
+                            }
+                            .tint(Theme.accentText)
                         }
+                        .textCase(nil)
                     }
                 }
             }
             .searchable(text: $query, prompt: "文字起こし・要約を検索")
-            .overlay { if recordings.isEmpty { ContentUnavailableView("録音なし", systemImage: "applewatch", description: Text("Watchで録音を開始")) } }
+            .overlay {
+                if recordings.isEmpty {
+                    ContentUnavailableView {
+                        Label("まだ録音がありません", systemImage: "applewatch.radiowaves.left.and.right")
+                    } description: {
+                        Text("Apple Watch の MyMemory で録音を始めると、ここに1日の記録が並びます")
+                    }
+                }
+            }
             .navigationDestination(for: UUID.self) { id in
                 if let rec = recordings.first(where: { $0.id == id }) { DetailView(rec: rec) }
             }
+            // 解析は録音や要約が変わったときだけ行い、処理状況の更新による再描画のたびには行わない
+            .task(id: homeKey) {
+                home = HomeSummary.build(recordings: recordings)
+                // 読み込み前や障害で一覧が空のときに全日を消さないよう、録音があるときだけ掃除する
+                if !recordings.isEmpty {
+                    ReflectionStore.purge(keepingDays: Array(Set(recordings.map { Calendar.current.startOfDay(for: $0.startedAt) })))
+                }
+            }
+            .onAppear { refreshTick += 1 }
+            .onChange(of: scenePhase) { _, p in if p == .active { refreshTick += 1 } }
+            .onChange(of: showSettings) { _, shown in if !shown { refreshTick += 1 } }
+            // まとめカードが「今日」を名乗るので、大きなタイトルは使わず縦の余白を空ける
             .navigationTitle("MyMemory")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink { ActionItemsView() } label: { Image(systemName: "checklist") }
                         .accessibilityLabel("決定事項・TODO")
                 }
-                ToolbarItem { Button { showSettings = true } label: { Image(systemName: "gearshape") } }
+                ToolbarItem {
+                    Button { showSettings = true } label: {
+                        Image(systemName: "gearshape").overlay(alignment: .topTrailing) {
+                            if needsAttention {
+                                Circle().fill(Theme.accent).frame(width: 7, height: 7).offset(x: 3, y: -3)
+                            }
+                        }
+                    }
+                    .accessibilityLabel(needsAttention ? "設定 (文字起こしの確認があります)" : "設定")
+                }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .fullScreenCover(isPresented: .constant(!onboardingDone)) { OnboardingView() }
@@ -84,8 +154,27 @@ struct RootView: View {
     }
 }
 
+private struct TodoRow: View {
+    let todo: HomeSummary.Todo
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: "circle").font(.caption).foregroundStyle(Theme.accentText)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(todo.text).font(.callout)
+                if let time = todo.time {
+                    Text(time, format: .dateTime.month().day().hour().minute())
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+
 private struct Row: View {
     let rec: Recording
+    /// 検索中は、一致した本文が見えるよう文字起こしを優先する。
+    var preferTranscript = false
 
     /// 保存値 (英語) はそのままに、表示だけ日本語にする。
     static func statusLabel(_ raw: String) -> String {
@@ -97,20 +186,33 @@ private struct Row: View {
         default: return raw
         }
     }
+    /// 一覧に出す 1 行目。要約の要点があればそれ、なければ文字起こしの冒頭。
+    private var preview: String? {
+        let transcript = rec.transcript.flatMap { $0.isEmpty ? nil : $0 }
+        if preferTranscript, let transcript { return transcript }
+        return rec.keyPoint ?? transcript
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(rec.startedAt, format: .dateTime.month().day().hour().minute()).font(.headline)
-                Spacer()
-                Text(Self.statusLabel(rec.statusRaw)).font(.caption).foregroundStyle(.secondary)
+        HStack(alignment: .top, spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(rec.startedAt, format: .dateTime.hour().minute())
+                    .font(.system(.title3, design: .rounded).bold()).monospacedDigit()
+                Label("\(Int(rec.duration / 60))分", systemImage: "waveform")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .labelStyle(.titleAndIcon)
             }
-            Text("\(Int(rec.duration / 60))分").font(.caption)
-            if let t = rec.transcript, !t.isEmpty {
-                Text(t).lineLimit(2).font(.footnote).foregroundStyle(.secondary)
-            } else if rec.statusRaw == "done", let e = rec.errorMessage {
-                Text(e).lineLimit(2).font(.footnote).foregroundStyle(.orange)
+            .frame(width: 64, alignment: .leading)
+            VStack(alignment: .leading, spacing: 6) {
+                StatusBadge(raw: rec.statusRaw, label: Self.statusLabel(rec.statusRaw))
+                if let preview {
+                    Text(preview).lineLimit(2).font(.subheadline)
+                } else if rec.statusRaw == "done", let e = rec.errorMessage {
+                    Text(e).lineLimit(2).font(.footnote).foregroundStyle(.orange)
+                }
             }
         }
+        .padding(.vertical, 4)
     }
 }
 
@@ -232,6 +334,25 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                // 文字起こしの処理状況と充電待ちの操作。メイン画面からはここへ移した
+                Section("文字起こし") {
+                    Label(pipeline.modelStatus, systemImage: "waveform")
+                    if let note = pipeline.continuedNote {
+                        Label(note, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                    }
+                    if pipeline.waitingForPower && pipeline.pendingCount > 0 {
+                        Button {
+                            pipeline.startNow()
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Label("今すぐ文字起こし (\(pipeline.pendingCount)件)", systemImage: "waveform.badge.plus")
+                                    .font(.body.bold())
+                                Text("画面を閉じても続けて処理します。電池残量が\(Int(PowerPolicy.minimumLevelUserInitiated * 100))%以上のときに使えます")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
                 Section("要約") {
                     switch OnDeviceSummarizer.status {
                     case .available:
@@ -363,11 +484,16 @@ struct DayReflectionView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 if let progress, loading { Text(progress).font(.caption).foregroundStyle(.secondary) }
-                if let text { Text(text).textSelection(.enabled) }
+                if let text { ReflectionCards(text: text) }
                 if let error { Text(error).foregroundStyle(.red) }
-                Section("タイムライン") { Text(timeline.isEmpty ? "文字起こしなし" : timeline).font(.footnote).textSelection(.enabled) }
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("タイムライン", systemImage: "list.bullet.rectangle").font(.headline)
+                    Text(timeline.isEmpty ? "文字起こしなし" : timeline).font(.footnote).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
             }.padding()
         }
+        .background(Color(.systemGroupedBackground))
         .navigationTitle(day.formatted(date: .abbreviated, time: .omitted))
         .toolbar {
             ShareLink(item: MarkdownFile(name: ExportFormatter.fileName(for: day),
@@ -379,7 +505,10 @@ struct DayReflectionView: View {
             Button(loading ? "生成中…" : "振り返り生成" + routeSuffix(shownRoute)) { job = Task { await run() } }
                 .disabled(loading || timeline.isEmpty)
         }
-        .onAppear { shownRoute = try? Summarizer.currentRoute() }
+        .onAppear {
+            shownRoute = try? Summarizer.currentRoute()
+            if text == nil { text = ReflectionStore.load(day)?.text }
+        }
         .onChange(of: scenePhase) { _, p in if p == .active { shownRoute = try? Summarizer.currentRoute() } }
         .onDisappear { job?.cancel() }  // 画面を離れたら残りの録音の要約を止める
     }
@@ -431,7 +560,9 @@ struct DayReflectionView: View {
             }
             if let saveError { self.error = "要約の保存に失敗: \(saveError)" }
             progress = "1日分をまとめています"
-            text = try await Summarizer.reflect(timeline: lines.joined(separator: "\n"), route: route).labeled
+            let result = try await Summarizer.reflect(timeline: lines.joined(separator: "\n"), route: route).labeled
+            text = result
+            ReflectionStore.save(result, for: day, recordingCount: items.count, latestStart: items.map(\.startedAt).max())
         } catch where Task.isCancelled || error is CancellationError {
             return
         } catch {
@@ -441,9 +572,9 @@ struct DayReflectionView: View {
 
     /// 保存済み要約の末尾にある「(端末内で要約)」などの注記を、束ねる前に外す。
     static func stripRouteLabel(_ s: String) -> String {
-        for label in ["\n\n(端末内で要約)", "\n\n(外部APIで要約)"] where s.hasSuffix(label) {
-            return String(s.dropLast(label.count))
-        }
-        return s
+        // 送信先ごとに注記が変わる (「(OpenAI で要約)」など) ため、最終行の形で判定する
+        guard let r = s.range(of: "\n\n", options: .backwards),
+              ReflectionSections.isRouteLabel(String(s[r.upperBound...])) else { return s }
+        return String(s[..<r.lowerBound])
     }
 }
