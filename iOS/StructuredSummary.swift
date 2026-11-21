@@ -57,7 +57,7 @@ enum DigestRenderer {
 }
 
 extension DigestTodo {
-    /// 根拠の引用が文字起こしにあり、引用が約束の言い方になっているものだけ残す。
+    /// 根拠の引用が文字起こしにあり、引用に一致した元の文が約束の言い方になっているものだけ残す。
     /// 同じ行動、または同じ発言を根拠にした言い換えは 1 件にまとめる。
     /// 担当の名前が文字起こしに無ければ空にする (小さなモデルは担当を取り違えやすいため)。
     static func verified(_ todos: [DigestTodo], source: String) -> [DigestTodo] {
@@ -65,8 +65,8 @@ extension DigestTodo {
         return todos.compactMap { t in
             let action = t.action.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !action.isEmpty,
-                  EvidenceMatcher.isSupported(quote: t.quote, in: source),
-                  EvidenceMatcher.isCommitment(t.quote),
+                  let said = EvidenceMatcher.sourceSentence(for: t.quote, in: source),
+                  EvidenceMatcher.isCommitment(said),
                   seen.insert(String(EvidenceMatcher.normalize(action))).inserted,
                   seenQuotes.insert(String(EvidenceMatcher.normalize(t.quote))).inserted else { return nil }
             var v = t

@@ -46,5 +46,12 @@ final class ProofreadGuardTests: XCTestCase {
         XCTAssertFalse(ProofreadGuard.isSafe(wrong: "会議", right: "来週の定例の打ち合わせ"))
         XCTAssertTrue(ProofreadGuard.isSafe(wrong: "説明かい", right: "説明会"))
         XCTAssertFalse(ProofreadGuard.isSafe(wrong: "二年か", right: "二年ですね"), "口調を変える直しは当てない")
+        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "二割減らす方向で進める", right: "増やす方向で決めた"), "意味を変える書き換えは当てない")
+    }
+
+    /// 本文に何度も現れる語は直さない (正しい語の一部を巻き添えで壊さない)。
+    func testSkipsFixWhenWrongAppearsMoreThanOnce() {
+        let text = "会議しつの予約と、しつもんの回答"
+        XCTAssertEqual(ProofreadGuard.apply([.init(wrong: "しつ", right: "室")], to: text), text)
     }
 }

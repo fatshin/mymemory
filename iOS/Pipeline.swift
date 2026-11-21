@@ -345,20 +345,22 @@ final class Pipeline: NSObject, ObservableObject {
                     modelStatus = "準備完了"
                 }
                 var text = result.text
-                rec.rawTranscript = nil
+                var raw: String?
                 if !text.isEmpty, PowerPolicy.shouldProofread(charge: currentCharge(), isSimulator: isSimulator) {
                     modelStatus = "文字起こしを校正中…"
                     let fileEnd = Int.max / 64  // 進捗は録音の終わりまで (校正中も継続タスクへ更新を送る)
-                    let proofread = try await Proofreader.proofread(text) { [weak self] in
+                    // 校正は必須ではない。時間切れで取り消されたら、終わった文字起こしを捨てずにそのまま保存する
+                    let proofread = (try? await Proofreader.proofread(text) { [weak self] in
                         Task { @MainActor in self?.reportProgress(windowIndex: fileEnd) }
-                    }
+                    }) ?? text
                     if proofread != text {
-                        rec.rawTranscript = text
+                        raw = text
                         text = proofread
                     }
                     modelStatus = "準備完了"
                 }
                 rec.transcript = text
+                rec.rawTranscript = raw
                 // 文字が残らなかった理由を見えるようにする (文字起こしに成功した見た目にしない)
                 rec.errorMessage = result.text.isEmpty ? result.emptyReason : nil
                 rec.summary = nil  // 文字起こし直したら古い要約は使わない (振り返りで再利用されるため)

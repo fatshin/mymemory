@@ -21,8 +21,25 @@ final class EvidenceMatcherTests: XCTestCase {
         for q in ["今週の金曜までにやっておきます", "明日の午前中に送ります", "日曜までに注文しておこう", "わかりました、日程調整しておきます"] {
             XCTAssertTrue(EvidenceMatcher.isCommitment(q), q)
         }
-        for q in ["デザインの人にも相談したほうがいいかもね", "駅前の居酒屋です。七時からです", "数字で出せたら説得力あるし", "三社とも取りました", "お願いしていいかな"] {
+        for q in ["デザインの人にも相談したほうがいいかもね", "駅前の居酒屋です。七時からです", "数字で出せたら説得力あるし", "三社とも取りました", "お願いしていいかな", "七時から始まります", "送ってもらえますか", "金曜までに送りました"] {
             XCTAssertFalse(EvidenceMatcher.isCommitment(q), q)
         }
+    }
+
+    /// 約束の判定はモデルが書いた引用ではなく、元の文で行う (引用に「やります」を足して約束に見せる捏造を防ぐ)。
+    func testCommitmentIsJudgedOnSourceSentence() {
+        let src = "来週の資料の件どうしようか。明日の午前中に送ります。"
+        let said = EvidenceMatcher.sourceSentence(for: "来週の資料の件やります", in: src)
+        XCTAssertEqual(said, "来週の資料の件どうしようか")
+        XCTAssertFalse(EvidenceMatcher.isCommitment(said ?? ""))
+        XCTAssertEqual(EvidenceMatcher.sourceSentence(for: "明日の午前中に送ります", in: src), "明日の午前中に送ります")
+    }
+
+    /// 引用が 2 文にまたがっても元の文を見つけ、最後の文で約束と判定する。
+    func testQuoteSpanningTwoSentences() {
+        let src = "はい。じゃあ私の方でB社に正式に申し込みの連絡します。今週の金曜までにやっておきます。お願いします。"
+        let said = EvidenceMatcher.sourceSentence(for: "B社に正式に申し込みの連絡します。今週の金曜までにやっておきます", in: src)
+        XCTAssertEqual(said, "じゃあ私の方でB社に正式に申し込みの連絡します。今週の金曜までにやっておきます")
+        XCTAssertTrue(EvidenceMatcher.isCommitment(said ?? ""))
     }
 }
