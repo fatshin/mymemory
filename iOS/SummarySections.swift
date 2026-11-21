@@ -16,7 +16,7 @@ enum SummarySections {
         let words: [String: Section] = [
             "決定事項": .decisions, "決定": .decisions, "重要な会話・決定": .decisions,
             "todo": .todos, "todo・約束": .todos,
-            "要点": .other, "気づき": .other, "1日の流れ": .other,
+            "概要": .other, "要点": .other, "気づき": .other, "1日の流れ": .other,
         ]
         return Dictionary(uniqueKeysWithValues: words.map { (normalize($0.key).lowercased(), $0.value) })
     }()

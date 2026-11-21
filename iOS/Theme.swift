@@ -31,6 +31,7 @@ enum Theme {
     static func icon(forSection title: String?) -> String {
         switch title {
         case "1日の流れ": return "clock"
+        case "概要": return "text.alignleft"
         case "要点": return "text.bubble"
         case "決定事項": return "checkmark.seal"
         case "TODO": return "checklist"

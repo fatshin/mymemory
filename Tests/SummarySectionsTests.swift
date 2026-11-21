@@ -155,4 +155,22 @@ final class SummarySectionsTests: XCTestCase {
         XCTAssertEqual(r.decisions, ["月額480円で出す"])
         XCTAssertEqual(r.todos, ["審査用の画像を撮る (本人 / 金曜)"])
     }
+
+    /// 先頭の【概要】の文章は、決定事項にも TODO にも混ぜない (一覧が意味不明になるため)。
+    func testOverviewParagraphIsNotAnItem() {
+        let s = """
+        【概要】
+        予約システムについて話し、B社に決めた。来週から準備を始める。
+
+        【要点】
+        - B社は初期費用がかからない
+        【決定事項】
+        - B社に決めた
+        【TODO】
+        - 田中: B社に申し込む (金曜)
+        """
+        let r = SummarySections.parse(s)
+        XCTAssertEqual(r.decisions, ["B社に決めた"])
+        XCTAssertEqual(r.todos, ["田中: B社に申し込む (金曜)"])
+    }
 }
