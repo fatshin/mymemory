@@ -78,20 +78,27 @@ final class Pipeline: NSObject, ObservableObject {
     // MARK: Power policy (省電力)
 
     /// 文字起こしは電力を最も使う処理。判定は PowerPolicy (単体テスト対象) に委ねる。
-    private func canTranscribeNow(userInitiated: Bool) -> Bool {
+    private func currentCharge() -> PowerPolicy.Charge {
         let device = UIDevice.current
         device.isBatteryMonitoringEnabled = true
-        let charge: PowerPolicy.Charge
         switch device.batteryState {
-        case .charging, .full: charge = .charging
-        case .unplugged: charge = .unplugged
-        default: charge = .unknown
+        case .charging, .full: return .charging
+        case .unplugged: return .unplugged
+        default: return .unknown
         }
+    }
+
+    private var isSimulator: Bool {
         #if targetEnvironment(simulator)
-        let isSimulator = true
+        return true
         #else
-        let isSimulator = false
+        return false
         #endif
+    }
+
+    private func canTranscribeNow(userInitiated: Bool) -> Bool {
+        let device = UIDevice.current
+        let charge = currentCharge()
         return PowerPolicy.shouldTranscribe(
             charge: charge,
             level: device.batteryLevel,
@@ -337,7 +344,21 @@ final class Pipeline: NSObject, ObservableObject {
                     modelLoadFailures = 0
                     modelStatus = "準備完了"
                 }
-                rec.transcript = result.text
+                var text = result.text
+                rec.rawTranscript = nil
+                if !text.isEmpty, PowerPolicy.shouldProofread(charge: currentCharge(), isSimulator: isSimulator) {
+                    modelStatus = "文字起こしを校正中…"
+                    let fileEnd = Int.max / 64  // 進捗は録音の終わりまで (校正中も継続タスクへ更新を送る)
+                    let proofread = try await Proofreader.proofread(text) { [weak self] in
+                        Task { @MainActor in self?.reportProgress(windowIndex: fileEnd) }
+                    }
+                    if proofread != text {
+                        rec.rawTranscript = text
+                        text = proofread
+                    }
+                    modelStatus = "準備完了"
+                }
+                rec.transcript = text
                 // 文字が残らなかった理由を見えるようにする (文字起こしに成功した見た目にしない)
                 rec.errorMessage = result.text.isEmpty ? result.emptyReason : nil
                 rec.summary = nil  // 文字起こし直したら古い要約は使わない (振り返りで再利用されるため)
@@ -424,6 +445,18 @@ final class Transcriber: @unchecked Sendable {
         }
     }
 
+    /// 句読点のある日本語を出すよう、書き方の手本として Whisper に渡す文。
+    /// 無音区間で手本をそのまま出すことがあるため、TranscriptCleaner.hallucinations にも入れている。
+    static let promptText = "以下は、日本語の会話の書き起こしです。"
+    private var cachedPromptTokens: [Int]?
+
+    private func promptTokens(_ w: WhisperKit) -> [Int]? {
+        if let cachedPromptTokens { return cachedPromptTokens }
+        guard let tokens = w.tokenizer?.encode(text: Self.promptText), !tokens.isEmpty else { return nil }
+        cachedPromptTokens = tokens
+        return tokens
+    }
+
     /// - Parameter onWindow: 30 秒ウィンドウが進むたびに、処理中のウィンドウ番号 (0 始まり) を渡す。
     @concurrent
     func transcribe(audioPath: String, onWindow: (@Sendable (Int) -> Void)? = nil) async throws -> Output {
@@ -464,7 +497,7 @@ final class Transcriber: @unchecked Sendable {
         var lastWindow = -1
         let results = try await w.transcribe(
             audioPath: audioPath,
-            decodeOptions: DecodingOptions(language: "ja", skipSpecialTokens: true)
+            decodeOptions: DecodingOptions(language: "ja", skipSpecialTokens: true, promptTokens: promptTokens(w))
         ) { progress in
             if progress.windowId != lastWindow {
                 lastWindow = progress.windowId

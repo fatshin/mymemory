@@ -31,6 +31,12 @@ enum PowerPolicy {
             return isSimulator
         }
     }
+
+    /// 文字起こしの校正 (端末内モデル) は、外部電源につながっているときだけ行う。
+    /// 校正は必須ではないため、利用者の明示操作でも電池では行わない。
+    static func shouldProofread(charge: Charge, isSimulator: Bool) -> Bool {
+        charge == .charging || (charge == .unknown && isSimulator)
+    }
 }
 
 /// 利用者が「今すぐ」と押した時点の録音だけを、電力条件の緩和対象にする。

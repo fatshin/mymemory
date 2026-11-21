@@ -60,4 +60,10 @@ final class TranscriptCleanerTests: XCTestCase {
             XCTAssertEqual(level.duration, 5.12, accuracy: 0.2)
         }
     }
+
+    /// Whisper に渡した書き方の手本が無音区間でそのまま出ても、文字起こしに残さない。
+    func testPromptEchoIsRemoved() {
+        let out = TranscriptCleaner.clean([.init(text: "以下は、日本語の会話の書き起こしです。"), .init(text: "明日の会議は十時からです。")])
+        XCTAssertEqual(out, "明日の会議は十時からです。")
+    }
 }

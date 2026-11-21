@@ -9,6 +9,8 @@ final class Recording {
     var batteryLevel: Double
     var fileName: String          // Documents/Audio/<fileName>
     var transcript: String?
+    /// 校正する前の文字起こし (Whisper の出力そのまま)。校正しなかった録音では nil。
+    var rawTranscript: String?
     var summary: String?
     var statusRaw: String         // pending / transcribing / done / failed
     var errorMessage: String?

@@ -231,7 +231,18 @@ struct DetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 if let s = rec.summary { Section("要約") { Text(s).textSelection(.enabled) } }
-                if let t = rec.transcript { Section("文字起こし") { Text(t).textSelection(.enabled) } }
+                if let t = rec.transcript {
+                    Section {
+                        Text(t).textSelection(.enabled)
+                        if let raw = rec.rawTranscript {
+                            DisclosureGroup("校正前の文字起こし") { Text(raw).textSelection(.enabled) }
+                        }
+                    } header: {
+                        Text("文字起こし")
+                    } footer: {
+                        if rec.rawTranscript != nil { Text("誤変換と句読点を端末内で直しています。") }
+                    }
+                }
                 // 無音などで文字が残らなかった案内 (status は done) は失敗ではないため赤にしない
                 if let e = rec.errorMessage ?? error { Text(e).foregroundStyle(rec.statusRaw == "done" && error == nil ? .orange : .red) }
                 // 実機での切り分け用: 音声ファイルの実際の長さと最大音量

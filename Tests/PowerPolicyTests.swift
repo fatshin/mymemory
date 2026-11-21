@@ -59,4 +59,12 @@ final class PowerPolicyTests: XCTestCase {
         XCTAssertFalse(scope.isActive)
         XCTAssertFalse(scope.covers(b))
     }
+
+    /// 校正は必須ではないので、電池で動いているときは利用者の操作があっても行わない。
+    func testProofreadOnlyOnExternalPower() {
+        XCTAssertTrue(PowerPolicy.shouldProofread(charge: .charging, isSimulator: false))
+        XCTAssertFalse(PowerPolicy.shouldProofread(charge: .unplugged, isSimulator: false))
+        XCTAssertFalse(PowerPolicy.shouldProofread(charge: .unknown, isSimulator: false))
+        XCTAssertTrue(PowerPolicy.shouldProofread(charge: .unknown, isSimulator: true))
+    }
 }
