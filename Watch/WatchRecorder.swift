@@ -112,6 +112,12 @@ final class WatchRecorder: NSObject, ObservableObject {
         start()
     }
 
+    /// 開始ボタンから呼ぶ。利用者が自分で始めたので、停止による自動開始の抑止を解く。
+    func userStart() {
+        UserDefaults.standard.removeObject(forKey: Self.lastManualStopKey)
+        start()
+    }
+
     /// 停止ボタンから呼ぶ。今日は自動で始めないよう日時を残す。
     func userStop() {
         UserDefaults.standard.set(Date(), forKey: Self.lastManualStopKey)

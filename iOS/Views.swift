@@ -240,7 +240,7 @@ struct DetailView: View {
                     } header: {
                         Text("文字起こし")
                     } footer: {
-                        if rec.rawTranscript != nil { Text("誤変換と句読点を端末内で直しています。") }
+                        if rec.rawTranscript != nil { Text("誤変換を端末内で直しています。") }
                     }
                 }
                 // 無音などで文字が残らなかった案内 (status は done) は失敗ではないため赤にしない

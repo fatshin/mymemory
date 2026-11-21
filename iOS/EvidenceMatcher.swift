@@ -43,10 +43,20 @@ enum EvidenceMatcher {
     /// 引用が複数の文にまたがるとき (「連絡します。金曜までにやっておきます」) に見る文の数。
     static let maxWindowSentences = 3
 
+    /// 文に分ける。問いかけかどうかを後で判定できるよう、「？」は文の末尾に残す。
     static func sentences(_ text: String) -> [String] {
-        text.split(whereSeparator: { "。！？!?\n".contains($0) })
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+        var out: [String] = [], cur = ""
+        for ch in text {
+            if "？?".contains(ch) {
+                cur.append("？"); out.append(cur); cur = ""
+            } else if "。！!\n".contains(ch) {
+                out.append(cur); cur = ""
+            } else {
+                cur.append(ch)
+            }
+        }
+        out.append(cur)
+        return out.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
 
     /// 最長共通部分文字列の長さ (動的計画法、1 行分の記憶)。引用は短いので計算量は小さい。
@@ -74,15 +84,31 @@ enum EvidenceMatcher {
         let whole = String(normalize(sentence))
         let hedges = ["かも", "ほうがいい", "方がいい", "たほうが", "おいおい", "検討", "たら", "れば", "かな", "でしょう", "だろう", "ようかな", "ようか", "ろうか", "たい", "ないと"]
         if hedges.contains(where: { whole.contains($0) }) { return false }
+        // 問いかけ (「金曜までに送れる？」) は約束ではない
+        if sentence.hasSuffix("？") { return false }
         let lastClause = sentence.split(whereSeparator: { "、,，".contains($0) }).last.map(String.init) ?? sentence
-        let last = String(normalize(lastClause))
-        // 問いかけ・過去の報告・事実の説明・否定で終わる節は約束ではない
+        let last = stripFinalParticles(String(normalize(lastClause)))
+        // 問いかけ・過去の報告・事実の説明・否定で終わる節は約束ではない (「〜する予定です」は除く)
         let nonPromiseEndings = ["ますか", "ました", "でした", "です", "ません", "だった"]
-        if nonPromiseEndings.contains(where: { last.hasSuffix($0) }) { return false }
-        let commitments = ["ておく", "ておき", "とく", "ておこう", "とこう", "やる", "やろう", "しよう", "までに", "ておいて", "といて", "お願いします", "引き受け", "担当します"]
+        if nonPromiseEndings.contains(where: { last.hasSuffix($0) }), !last.hasSuffix("予定です") { return false }
+        let commitments = ["ておく", "ておき", "とく", "ておこう", "とこう", "やる", "やろう", "しよう", "までに", "ておいて", "といて", "お願いします", "引き受け", "担当します", "予定です"]
         if commitments.contains(where: { last.contains($0) }) { return true }
         // 「〜します」「〜送ります」のような意思の「ます」だけを約束とみなす (「始まります」「あります」は予定や事実)
-        let nonVolitional = ["まります", "なります", "あります", "います", "れます", "かります", "思います"]
+        let nonVolitional = ["まります", "なります", "あります", "ています", "でいます", "ございます", "られます", "かかります", "思います"]
         return last.hasSuffix("ます") && !nonVolitional.contains(where: { last.hasSuffix($0) })
+    }
+
+    /// 文末の「ね」「よ」などを外す (「送りますね」「送りましたよ」を語尾で正しく判定するため)。
+    static func stripFinalParticles(_ s: String) -> String {
+        var t = s
+        let particles = ["よね", "けど", "から", "ので", "ね", "よ", "わ", "ー", "〜"]
+        var changed = true
+        while changed {
+            changed = false
+            for p in particles where t.count > p.count && t.hasSuffix(p) {
+                t = String(t.dropLast(p.count)); changed = true
+            }
+        }
+        return t
     }
 }

@@ -10,7 +10,8 @@ enum ProofreadGuard {
     }
 
     /// 直しのうち確かなものだけを本文に当てる。モデルは本文を書き直さず、直す箇所だけを挙げる (要約や言い換えを防ぐ)。
-    /// - 誤りとされた部分が本文にそのまま 1 回だけあり、12 字以内で、直した語と字の半分以上が共通すること
+    /// - 誤りとされた部分が本文にそのまま 1 回だけあり、12 字以内で、直した語と読みがほぼ同じこと
+    /// - 否定や数を変えないこと
     /// - 直した語が記号やモデルの書式を含まず、長さが大きく変わらないこと
     /// - 漢数字を算用数字にするような書き方の変更や、丁寧語への言い換えはしない
     static func apply(_ fixes: [Fix], to text: String) -> String {
@@ -26,8 +27,11 @@ enum ProofreadGuard {
 
     static func isSafe(wrong: String, right: String) -> Bool {
         guard (2...maxFixChars).contains(wrong.count), !right.isEmpty, wrong != right else { return false }
-        // 誤変換の直しは元の字を一部残す (「日程超生」→「日程調整」)。まったく別の言葉への置き換えは当てない
-        guard overlap(EvidenceMatcher.normalize(wrong), EvidenceMatcher.normalize(right)) >= minFixOverlap else { return false }
+        // 誤変換は同じ音の別の字なので、読みがほぼ同じものだけを当てる (「日程超生」→「日程調整」、「けいやくしょ」→「契約書」)。
+        // 読みの違う言葉への置き換え (「増やす」→「減らす」) は当てない
+        guard overlap(Array(reading(wrong)), Array(reading(right))) >= minFixOverlap else { return false }
+        // 否定や数を変える直しは意味が逆になるため当てない (「送ります」→「送りません」、「三時」→「二時」)
+        guard negations(wrong) == negations(right), numerals(wrong) == numerals(right) else { return false }
         guard abs(right.count - wrong.count) <= max(2, wrong.count / 2) else { return false }
         let forbidden = CharacterSet(charactersIn: "{}[]<>`\"\\|\n\r")
         guard right.unicodeScalars.allSatisfy({ !forbidden.contains($0) }) else { return false }
@@ -47,8 +51,8 @@ enum ProofreadGuard {
     static let minOverlap = 0.6
     /// 直し 1 件で置き換える語の長さの上限。文ごとの書き換えを防ぐ。
     static let maxFixChars = 12
-    /// 直し 1 件の前後で共通に残る字の割合の下限。
-    static let minFixOverlap = 0.5
+    /// 直し 1 件の前後で、読み (ローマ字) が共通する割合の下限。
+    static let minFixOverlap = 0.8
 
     static func accept(original: String, corrected: String) -> Bool {
         let a = EvidenceMatcher.normalize(original)
@@ -71,5 +75,31 @@ enum ProofreadGuard {
             swap(&prev, &cur)
         }
         return Double(prev[y.count]) / Double(max(x.count, y.count))
+    }
+
+    /// 読みのローマ字 (日本語の形態素解析による)。読めない部分は文字のまま使う。
+    static func reading(_ s: String) -> String {
+        let cf = s as CFString
+        let range = CFRange(location: 0, length: CFStringGetLength(cf))
+        guard let tokenizer = CFStringTokenizerCreate(nil, cf, range, kCFStringTokenizerUnitWord,
+                                                      Locale(identifier: "ja_JP") as CFLocale) else { return s.lowercased() }
+        var out = ""
+        while CFStringTokenizerAdvanceToNextToken(tokenizer) != [] {
+            let r = CFStringTokenizerGetCurrentTokenRange(tokenizer)
+            if let latin = CFStringTokenizerCopyCurrentTokenAttribute(tokenizer, kCFStringTokenizerAttributeLatinTranscription) as? String {
+                out += latin
+            } else if let token = CFStringCreateWithSubstring(nil, cf, r) {
+                out += token as String
+            }
+        }
+        return out.lowercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    private static func negations(_ s: String) -> Int {
+        ["ない", "ません", "なかっ", "ず"].reduce(0) { $0 + s.components(separatedBy: $1).count - 1 }
+    }
+
+    private static func numerals(_ s: String) -> String {
+        s.filter { "0123456789０１２３４５６７８９〇一二三四五六七八九十百千万".contains($0) }
     }
 }

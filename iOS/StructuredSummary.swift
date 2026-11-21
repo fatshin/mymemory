@@ -59,7 +59,7 @@ enum DigestRenderer {
 extension DigestTodo {
     /// 根拠の引用が文字起こしにあり、引用に一致した元の文が約束の言い方になっているものだけ残す。
     /// 同じ行動、または同じ発言を根拠にした言い換えは 1 件にまとめる。
-    /// 担当の名前が文字起こしに無ければ空にする (小さなモデルは担当を取り違えやすいため)。
+    /// 担当の名前が根拠の発言に無ければ空にする (小さなモデルは担当を取り違えやすいため)。
     static func verified(_ todos: [DigestTodo], source: String) -> [DigestTodo] {
         var seen = Set<String>(), seenQuotes = Set<String>()
         return todos.compactMap { t in
@@ -72,7 +72,8 @@ extension DigestTodo {
             var v = t
             v.action = action
             let owner = t.owner.trimmingCharacters(in: .whitespacesAndNewlines)
-            v.owner = (!owner.isEmpty && source.contains(owner.replacingOccurrences(of: "さん", with: ""))) ? owner : ""
+            // 担当は、根拠の発言 (一致した元の文) に名前が出てくるときだけ残す
+            v.owner = (!owner.isEmpty && said.contains(owner.replacingOccurrences(of: "さん", with: ""))) ? owner : ""
             // 期限は発言にあるものだけ (「金曜」のような短い語は、そのまま含まれるかで見る)
             let due = t.due.trimmingCharacters(in: .whitespacesAndNewlines)
             let nd = EvidenceMatcher.normalize(due)

@@ -43,6 +43,9 @@ final class AutoResumePolicyTests: XCTestCase {
                                                    lastManualStop: at(22, 9), now: at(22, 21), calendar: cal))
         XCTAssertTrue(AutoStartPolicy.shouldStart(enabled: true, isActive: false, isBatteryLow: false,
                                                   lastManualStop: at(22, 21), now: at(23, 7), calendar: cal))
+        // 夜遅くに止めて、日付が変わった直後に開いても始めない
+        XCTAssertFalse(AutoStartPolicy.shouldStart(enabled: true, isActive: false, isBatteryLow: false,
+                                                   lastManualStop: at(22, 23), now: at(23, 1), calendar: cal))
     }
 
     /// 設定 OFF・録音中や一時停止中・電池残量が少ないときは始めない。

@@ -45,6 +45,11 @@ final class ProofreadGuardTests: XCTestCase {
         XCTAssertFalse(ProofreadGuard.isSafe(wrong: "わ", right: "は"))
         XCTAssertFalse(ProofreadGuard.isSafe(wrong: "会議", right: "来週の定例の打ち合わせ"))
         XCTAssertTrue(ProofreadGuard.isSafe(wrong: "説明かい", right: "説明会"))
+        XCTAssertTrue(ProofreadGuard.isSafe(wrong: "けいやくしょ", right: "契約書"), "読みが同じかな書きは直す")
+        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "送ります", right: "送りません"), "否定にする直しは当てない")
+        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "三時から", right: "二時から"), "数を変える直しは当てない")
+        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "増やす", right: "減らす"), "読みの違う言葉には置き換えない")
+        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "予約シス", right: "予約システム"), "語の途中までの直しは当てない (残りの字が浮く)")
         XCTAssertFalse(ProofreadGuard.isSafe(wrong: "二年か", right: "二年ですね"), "口調を変える直しは当てない")
         XCTAssertFalse(ProofreadGuard.isSafe(wrong: "二割減らす方向で進める", right: "増やす方向で決めた"), "意味を変える書き換えは当てない")
     }

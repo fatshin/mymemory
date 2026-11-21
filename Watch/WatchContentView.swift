@@ -23,7 +23,7 @@ struct WatchContentView: View {
                         .tint(.red)
                 } else {
                     Button(recorder.isRecording ? "停止" : "開始") {
-                        recorder.isRecording ? recorder.userStop() : recorder.start()
+                        recorder.isRecording ? recorder.userStop() : recorder.userStart()
                     }
                     .tint(recorder.isRecording ? .red : .green)
                 }
@@ -39,7 +39,7 @@ struct WatchContentView: View {
                 }
                 Toggle("開いたら自動で録音", isOn: $autoStart)
                     .font(.caption2)
-                Text("停止ボタンで止めた日は、開いても自動では始めません")
+                Text("停止ボタンで止めた日は、開いても自動では始めません (止めてから8時間は翌日でも始めません)")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
