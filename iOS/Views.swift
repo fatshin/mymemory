@@ -223,6 +223,9 @@ struct SettingsView: View {
     @State private var keys: [RemoteProvider: String] = Dictionary(uniqueKeysWithValues: RemoteProvider.allCases.map { ($0, Keychain.get($0.keyName) ?? "") })
     @State private var models: [RemoteProvider: String] = Dictionary(uniqueKeysWithValues: RemoteProvider.allCases.map { ($0, UserDefaults.standard.string(forKey: Summarizer.modelKey($0)) ?? "") })
     @AppStorage(Summarizer.remoteAllowedKey) private var remoteAllowed = false
+    @State private var modelLists: [RemoteProvider: [String]] = [:]
+    @State private var listError: String?
+    @State private var loadingList = false
     @AppStorage(RetentionPolicy.key) private var retentionDays = 0
     @EnvironmentObject var pipeline: Pipeline
     @Environment(\.dismiss) private var dismiss
@@ -254,14 +257,27 @@ struct SettingsView: View {
                         }
                     SecureField("\(provider.displayName) APIキー (\(provider.keyPlaceholder))", text: Binding(
                         get: { keys[provider] ?? "" }, set: { keys[provider] = $0 }))
-                    TextField("モデル (空欄は \(provider.defaultModel))", text: Binding(
+                    Button(loadingList ? "モデル一覧を取得中…" : "使えるモデルを一覧から選ぶ") { fetchModels() }
+                        .disabled(loadingList || (keys[provider] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if let list = modelLists[provider] {
+                        Picker("モデル", selection: Binding(
+                            get: { effectiveModel(provider) }, set: { models[provider] = $0 })) {
+                            // 保存済みのモデルが一覧に無いときも、選び直すまでは表示しておく
+                            if !list.contains(effectiveModel(provider)) {
+                                Text("\(effectiveModel(provider)) (一覧にありません)").tag(effectiveModel(provider))
+                            }
+                            ForEach(list, id: \.self) { Text($0).tag($0) }
+                        }
+                    }
+                    if let listError { Text(listError).font(.footnote).foregroundStyle(.red) }
+                    TextField("モデル名を直接入力 (空欄は \(provider.defaultModel))", text: Binding(
                         get: { models[provider] ?? "" }, set: { models[provider] = $0 }))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 } header: {
                     Text("外部への送信 (任意・既定はオフ)")
                 } footer: {
-                    Text("オンにすると、端末内で要約できないときに限り、文字起こしテキストを\(provider.recipient)へ送ります。音声は送りません。APIキーはこの端末のKeychainにのみ保存します。送信先を変えると許可はオフに戻ります。モデル名は各社の更新に合わせて変更してください。")
+                    Text("オンにすると、端末内で要約できないときに限り、文字起こしテキストを\(provider.recipient)へ送ります。音声は送りません。APIキーはこの端末のKeychainにのみ保存します。送信先を変えると許可はオフに戻ります。モデルの一覧を取得するときは、APIキーだけを\(provider.recipient)へ送ります。")
                 }
                 Section {
                     Picker("古い音声を自動で削除", selection: $retentionDays) {
@@ -296,6 +312,29 @@ struct SettingsView: View {
                     dismiss()
                 }
             }
+        }
+    }
+
+    private func effectiveModel(_ p: RemoteProvider) -> String {
+        let m = (models[p] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return m.isEmpty ? p.defaultModel : m
+    }
+
+    /// 入力欄のキー (保存前) で、送信先の実在するモデルを取得する。
+    private func fetchModels() {
+        let p = provider, key = keys[p] ?? ""
+        loadingList = true
+        listError = nil
+        Task {
+            do {
+                let list = try await Summarizer.listModels(p, key: key)
+                modelLists[p] = list
+                // 既定のモデルが実在しなければ、一覧の先頭 (新しいもの) を選んでおく
+                if (models[p] ?? "").isEmpty, !list.contains(p.defaultModel), let first = list.first { models[p] = first }
+            } catch {
+                listError = error.localizedDescription
+            }
+            loadingList = false
         }
     }
 }

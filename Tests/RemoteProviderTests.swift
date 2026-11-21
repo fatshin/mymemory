@@ -67,4 +67,34 @@ final class RemoteProviderTests: XCTestCase {
         XCTAssertEqual(RemoteProvider.anthropic.keyName, "anthropic_api_key")
         XCTAssertEqual(Set(RemoteProvider.allCases.map(\.keyName)).count, RemoteProvider.allCases.count)
     }
+
+    // MARK: モデル一覧
+
+    /// Anthropic は既定 20 件しか返さないため、上限 1000 件を指定し、続きは after_id で取る。
+    func testAnthropicListPagesWithAfterId() throws {
+        let r = RemoteProvider.anthropic.listRequest(key: "K", page: "m-last")
+        XCTAssertEqual(r.url?.absoluteString, "https://api.anthropic.com/v1/models?limit=1000&after_id=m-last")
+        XCTAssertEqual(r.value(forHTTPHeaderField: "x-api-key"), "K")
+        let page = try RemoteProvider.anthropic.parseModels(Data(#"{"data":[{"id":"a-2"},{"id":"a-1"}],"has_more":true,"last_id":"a-1"}"#.utf8))
+        XCTAssertEqual(page, .init(ids: ["a-2", "a-1"], next: "a-1"))
+    }
+
+    /// OpenAI の一覧から、要約に使えない埋め込み・音声・画像用を除き、新しい順に並べる。
+    func testOpenAIListKeepsOnlyChatModelsNewestFirst() throws {
+        let body = #"{"data":[{"id":"text-embedding-3-small","created":5},{"id":"gpt-old","created":1},{"id":"gpt-new","created":9},{"id":"whisper-1","created":7},{"id":"o9-mini","created":3},{"id":"gpt-image-2","created":8}]}"#
+        XCTAssertEqual(try RemoteProvider.openAI.parseModels(Data(body.utf8)).ids, ["gpt-new", "o9-mini", "gpt-old"])
+    }
+
+    /// Gemini は文章生成 (generateContent) に使えるものだけ残し、"models/" を外す (要約の URL に二重に付けない)。
+    func testGeminiListStripsPrefixAndFiltersMethods() throws {
+        let body = #"{"models":[{"name":"models/gemini-x","supportedGenerationMethods":["generateContent"]},{"name":"models/embed-y","supportedGenerationMethods":["embedContent"]}],"nextPageToken":"T"}"#
+        XCTAssertEqual(try RemoteProvider.gemini.parseModels(Data(body.utf8)), .init(ids: ["gemini-x"], next: "T"))
+        XCTAssertFalse(RemoteProvider.gemini.listRequest(key: "SECRET").url!.absoluteString.contains("SECRET"))
+    }
+
+    /// URL に載せられない ID は一覧に出さない (選んでも要約の要求で拒否されるため)。
+    func testListDropsInvalidIds() throws {
+        let body = #"{"models":[{"name":"gpt-oss:120b"},{"name":"../evil"}]}"#
+        XCTAssertEqual(try RemoteProvider.ollamaCloud.parseModels(Data(body.utf8)).ids, ["gpt-oss:120b"])
+    }
 }

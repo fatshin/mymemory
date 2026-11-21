@@ -103,6 +103,82 @@ enum RemoteProvider: String, CaseIterable, Identifiable, Sendable {
         return req
     }
 
+    // MARK: モデル一覧 (設定画面で実在するモデルから選ぶ。送るのは API キーだけで、文字起こしは送らない)
+
+    /// 一覧の 1 ページ。`next` があれば続きがある (Anthropic は after_id、Gemini は pageToken に渡す)。
+    struct ModelPage: Equatable {
+        let ids: [String]
+        let next: String?
+    }
+
+    func listRequest(key: String, page: String? = nil) -> URLRequest {
+        var c: URLComponents
+        var headers: [String: String] = [:]
+        switch self {
+        case .anthropic:
+            // 既定は 20 件 (最大 1000 件。公式リファレンス)
+            c = URLComponents(string: "https://api.anthropic.com/v1/models")!
+            c.queryItems = [URLQueryItem(name: "limit", value: "1000")] + (page.map { [URLQueryItem(name: "after_id", value: $0)] } ?? [])
+            headers["x-api-key"] = key
+            headers["anthropic-version"] = "2023-06-01"
+        case .openAI:
+            c = URLComponents(string: "https://api.openai.com/v1/models")!
+            headers["authorization"] = "Bearer \(key)"
+        case .gemini:
+            c = URLComponents(string: "https://generativelanguage.googleapis.com/v1beta/models")!
+            c.queryItems = [URLQueryItem(name: "pageSize", value: "1000")] + (page.map { [URLQueryItem(name: "pageToken", value: $0)] } ?? [])
+            headers["x-goog-api-key"] = key
+        case .ollamaCloud:
+            c = URLComponents(string: "https://ollama.com/api/tags")!
+            headers["authorization"] = "Bearer \(key)"
+        }
+        var req = URLRequest(url: c.url!)
+        req.httpMethod = "GET"
+        for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
+        return req
+    }
+
+    /// 一覧の応答を読む。要約の要求に使えない ID (URL に載せられない文字を含むものなど) は出さない。
+    func parseModels(_ data: Data) throws -> ModelPage {
+        let ids: [String]
+        var next: String?
+        switch self {
+        case .anthropic:
+            struct R: Decodable { struct M: Decodable { let id: String }; let data: [M]; let has_more: Bool?; let last_id: String? }
+            let r = try JSONDecoder().decode(R.self, from: data)
+            ids = r.data.map(\.id)  // 新しい順で返る
+            next = (r.has_more ?? false) ? r.last_id : nil
+        case .openAI:
+            struct R: Decodable { struct M: Decodable { let id: String; let created: Int? }; let data: [M] }
+            let r = try JSONDecoder().decode(R.self, from: data)
+            ids = r.data.filter { Self.isOpenAIChatModel($0.id) }
+                .sorted { ($0.created ?? 0) > ($1.created ?? 0) }.map(\.id)
+        case .gemini:
+            struct R: Decodable {
+                struct M: Decodable { let name: String; let supportedGenerationMethods: [String]? }
+                let models: [M]?; let nextPageToken: String?
+            }
+            let r = try JSONDecoder().decode(R.self, from: data)
+            // name は "models/gemini-…"。要約の URL に二重に付かないよう先頭を外す
+            ids = (r.models ?? []).filter { $0.supportedGenerationMethods?.contains("generateContent") ?? false }
+                .map { $0.name.hasPrefix("models/") ? String($0.name.dropFirst(7)) : $0.name }
+            next = (r.nextPageToken?.isEmpty ?? true) ? nil : r.nextPageToken
+        case .ollamaCloud:
+            struct R: Decodable { struct M: Decodable { let name: String?; let model: String? }; let models: [M]? }
+            ids = (try JSONDecoder().decode(R.self, from: data).models ?? []).compactMap { $0.model ?? $0.name }
+        }
+        return ModelPage(ids: ids.filter(Self.isValidModel), next: next)
+    }
+
+    /// OpenAI の一覧には埋め込み・音声・画像用も含まれるため、文章の生成に使うものだけ残す。
+    /// 一覧の応答には用途が載っていないので、ID の名前からの推定 (外れたら手入力で指定できる)。
+    static func isOpenAIChatModel(_ id: String) -> Bool {
+        let s = id.lowercased()
+        let family = s.hasPrefix("gpt-") || s.hasPrefix("chatgpt-") || (s.first == "o" && s.dropFirst().first?.isNumber == true)
+        let excluded = ["embedding", "tts", "whisper", "dall-e", "image", "audio", "realtime", "transcribe", "moderation", "search", "instruct"]
+        return family && !excluded.contains { s.contains($0) }
+    }
+
     func parse(_ data: Data) throws -> String {
         let text: String
         switch self {

@@ -133,6 +133,34 @@ enum Summarizer {
         """)
     }
 
+    /// 送信先の実在するモデルの一覧。設定画面で利用者がボタンを押したときだけ呼ぶ (送るのは API キーだけ)。
+    /// キーは保存前の入力欄の値を受け取る (Keychain に入るのは「保存」を押した後のため)。
+    static func listModels(_ p: RemoteProvider, key: String) async throws -> [String] {
+        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { throw Failure(message: "APIキーを入力してください") }
+        var ids: [String] = []
+        var page: String?
+        for _ in 0..<5 {
+            var req = p.listRequest(key: key, page: page)
+            req.timeoutInterval = 30
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            guard code == 200 else {
+                // 応答本文は出さない (キーの一部が含まれることがあるため)
+                let hint = (code == 401 || code == 403) ? " (APIキーを確認してください)" : ""
+                throw Failure(message: "\(p.displayName) のモデル一覧を取得できません: HTTP \(code)\(hint)")
+            }
+            let r = try p.parseModels(data)
+            ids += r.ids
+            guard let n = r.next else { break }
+            page = n
+        }
+        var seen = Set<String>()
+        let unique = ids.filter { seen.insert($0).inserted }
+        if unique.isEmpty { throw Failure(message: "\(p.displayName) で使えるモデルが見つかりませんでした") }
+        return unique
+    }
+
     private static func call(prompt: String) async throws -> String {
         // 経路選択を通らない呼び出しがあっても、許可なしでは送らない (二重の防御)
         // 許可を確かめる相手と実際の送信先を、同じ 1 回の読み取りから取る
