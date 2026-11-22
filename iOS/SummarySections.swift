@@ -9,14 +9,15 @@ enum SummarySections {
         var isEmpty: Bool { decisions.isEmpty && todos.isEmpty }
     }
 
-    private enum Section { case decisions, todos, other }
+    /// 項目を拾う節。要点は parse では返さず、見直し (SummaryReviewGuard) でだけ使う。
+    enum Section: Equatable { case keyPoints, decisions, todos, other }
 
     /// 見出し語。比べる行と同じ正規化 (全角→半角で「・」も半角になる) をかけたものをキーにする。
     private static let headingWords: [String: Section] = {
         let words: [String: Section] = [
             "決定事項": .decisions, "決定": .decisions, "重要な会話・決定": .decisions,
             "todo": .todos, "todo・約束": .todos,
-            "概要": .other, "要点": .other, "気づき": .other, "1日の流れ": .other,
+            "概要": .other, "要点": .keyPoints, "気づき": .other, "1日の流れ": .other,
         ]
         return Dictionary(uniqueKeysWithValues: words.map { (normalize($0.key).lowercased(), $0.value) })
     }()
@@ -27,7 +28,7 @@ enum SummarySections {
             switch f.section {
             case .decisions: items.decisions.append(f.text)
             case .todos: items.todos.append(f.text)
-            case .other: break
+            case .keyPoints, .other: break
             }
         }
         return items
@@ -38,14 +39,26 @@ enum SummarySections {
     /// TODO の各項目を transform で置き換えた文を返す (nil を返した項目は消す)。他の節・注記・行は変えない。
     /// 節の TODO がすべて消えたら「- なし」を残す。要約の本文 (正本) は書き換えず、表示と書き出しの直前に使う。
     static func mapTodos(in text: String, _ transform: (String) -> String?) -> String {
+        mapItems(in: text, sections: [.todos]) { _, _, t in transform(t) }
+    }
+
+    /// 要点・決定事項・TODO の項目を、出てくる順に (節, 本文) で返す。番号は mapItems の index と同じ。
+    static func reviewItems(in text: String) -> [(section: Section, text: String)] {
+        scan(lines(of: text)).filter { $0.section != .other }.map { ($0.section, $0.text) }
+    }
+
+    /// 指定した節の項目を transform で置き換えた文を返す (nil を返した項目は消す)。index は節をまたいだ通し番号。
+    /// 他の節・注記・行は変えない。節の項目がすべて消えたら「- なし」を残す。
+    static func mapItems(in text: String, sections: Set<Section>, _ transform: (Section, Int, String) -> String?) -> String {
         var ls = lines(of: text)
-        let todos = scan(ls).filter { $0.section == .todos }
+        let todos = scan(ls).filter { sections.contains($0.section) }
         guard !todos.isEmpty else { return text }
         var remaining: [Int: Int] = [:]  // 節の見出し行 → 残る項目数
-        let results = todos.map { transform($0.text) }
+        let results = todos.enumerated().map { transform($0.element.section, $0.offset, $0.element.text) }
         for (t, r) in zip(todos, results) where r != nil { remaining[t.sectionStart, default: 0] += 1 }
         // 後ろから置き換えて、前の項目の行番号をずらさない
         for (t, r) in zip(todos, results).reversed() {
+            if r == t.text { continue }  // 変わらない項目は元の行 (記号・折り返し) のまま残す
             var newLines: [String]
             if let r {
                 let item = "- " + r.replacingOccurrences(of: "\n", with: " ")
@@ -109,12 +122,12 @@ enum SummarySections {
                     // 見出しは正規化した文字で判定するため、原文と一致しないときは標準の見出しに置き換える (見出しを消さない)
                     let prefix = line.hasSuffix(h.1)
                         ? String(line.dropLast(h.1.count)).trimmingCharacters(in: .whitespaces)
-                        : (h.0 == .todos ? "【TODO】" : h.0 == .decisions ? "【決定事項】" : nil)
+                        : (h.0 == .todos ? "【TODO】" : h.0 == .decisions ? "【決定事項】" : h.0 == .keyPoints ? "【要点】" : nil)
                     add(stripBullet(h.1) ?? h.1, at: i, headingPrefix: prefix)
                 }
                 continue
             }
-            guard section == .decisions || section == .todos else { continue }
+            guard let section, section != .other else { continue }
             if let body = stripBullet(line) {
                 add(body, at: i)
             } else if lastWasItem, rawLine.first?.isWhitespace == true, let last = found.indices.last {

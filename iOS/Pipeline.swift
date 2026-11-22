@@ -45,6 +45,8 @@ final class Pipeline: NSObject, ObservableObject {
     /// 自動要約の失敗回数 (録音ごと、アプリ起動中だけ保持) と、最後に自動要約を始めた時刻。
     private var autoSummaryFailures: [UUID: Int] = [:]
     private var lastAutoSummaryRun: Date?
+    /// 見直し (端末内モデル) が混雑で止まった録音の要約。外部 API へ送り直さないよう、見直せるまで持っておく (アプリを終えたら消える)。
+    private var awaitingReview: [UUID: (transcript: String, draft: Summarizer.Result)] = [:]
     private var runFinishedSeconds: Double = 0
     private var currentFileSeconds: Double = 0
     /// 実行中の drain。前面・通知・バックグラウンドのどこから呼んでも 1 本だけ動く。
@@ -486,21 +488,52 @@ final class Pipeline: NSObject, ObservableObject {
         guard !targets.isEmpty else { return }
         // 中断・取り消しでも「要約を作成中」の表示を残さない
         defer { if modelStatus.hasPrefix("要約を作成中") { modelStatus = "準備完了" } }
-        var consecutiveFailures = 0
+        // 削除・要約済み・対象外になった録音の持ち越しは捨てる (文字起こしをメモリに残さない)
+        let ids = Set(targets.map(\.id))
+        awaitingReview = awaitingReview.filter { ids.contains($0.key) }
+        var consecutiveFailures = 0, consecutiveBusy = 0
         for (i, rec) in targets.enumerated() {
             if Task.isCancelled || !rec.isAlive { continue }
+            // 端末内モデルが混み続けるときは、残りを次の機会に回す
+            if consecutiveBusy >= 3 { return }
             // 許可の取り消し・送信先の切り替え・充電の抜き差しを 1 件ごとに反映する
             guard let route = try? Summarizer.currentRoute(), route == firstRoute, autoSummaryPowerOK(route) else { return }
             guard let t = rec.transcript, !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
             modelStatus = "要約を作成中 \(i + 1) / \(targets.count)"
             do {
-                let result = try await Summarizer.summarize(t, route: route)
+                let draft: Summarizer.Result
+                if let held = awaitingReview[rec.id], held.transcript == t {
+                    draft = held.draft
+                } else {
+                    // 雑音や断片だけの録音は要約しない (外部 API へも送らない)。判定できなければ要約する
+                    if try await SummaryReviewer.isMeaningful(t) == false {
+                        if rec.isAlive, rec.transcript == t, rec.summary == nil {
+                            rec.summary = SummaryReviewGuard.notMeaningfulSummary  // 要約はしていないため「で要約」の注記は付けない
+                            try? context.save()
+                        }
+                        continue
+                    }
+                    draft = try await Summarizer.summarize(t, route: route)
+                }
+                // 表示する前に端末内モデルで見直す。混雑で見直せなければ、要約を持ったまま次の機会に回す
+                let result: Summarizer.Result
+                do {
+                    result = try await Summarizer.review(draft)
+                } catch is SummaryReviewer.Busy {
+                    awaitingReview[rec.id] = (t, draft)
+                    consecutiveBusy += 1
+                    continue
+                }
+                awaitingReview[rec.id] = nil
                 consecutiveFailures = 0
+                consecutiveBusy = 0
                 // 待つ間に削除・文字起こし直し・手動要約された録音には上書きしない
                 if rec.isAlive, rec.transcript == t, rec.summary == nil {
                     rec.summary = result.labeled
                     try? context.save()
                 }
+            } catch is SummaryReviewer.Busy {
+                consecutiveBusy += 1  // 意味の判定が混雑で止まった。この録音は外部 API へ送らずに次の機会に回す
             } catch {
                 if Task.isCancelled { return }
                 autoSummaryFailures[rec.id, default: 0] += 1

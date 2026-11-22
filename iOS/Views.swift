@@ -351,11 +351,15 @@ struct DetailView: View {
         defer { summarizing = false }
         do {
             let route = try pickRoute(tapped) { routes = $0 }
-            let result = try await Summarizer.summarize(t, route: route)
+            // 表示する前に端末内モデルで見直す
+            let result = try await Summarizer.reviewOrKeep(Summarizer.summarize(t, route: route))
             // 削除された録音や、待つ間に文字起こし直された録音には書かない
             guard rec.isAlive, rec.transcript == t else { return }
             rec.summary = result.labeled
             try ctx.save()
+            if !result.reviewed, OnDeviceSummarizer.isAvailable {
+                error = "端末内モデルで見直せなかったため、見直し前の要約を表示しています"
+            }
         } catch where Task.isCancelled || error is CancellationError {
             return
         } catch {
@@ -411,7 +415,8 @@ struct SettingsView: View {
     @State private var provider = Summarizer.provider
     @State private var keys: [RemoteProvider: String] = Dictionary(uniqueKeysWithValues: RemoteProvider.allCases.map { ($0, Keychain.get($0.keyName) ?? "") })
     @State private var models: [RemoteProvider: String] = Dictionary(uniqueKeysWithValues: RemoteProvider.allCases.map { ($0, UserDefaults.standard.string(forKey: Summarizer.modelKey($0)) ?? "") })
-    @AppStorage(Summarizer.remoteAllowedKey) private var remoteAllowed = false
+    /// 送信の許可。送信先・キーと同じく「保存」で疎通を確かめてから書く (失敗や取り消しで一部だけ残さない)。
+    @State private var remoteAllowed = Summarizer.isAllowed(Summarizer.provider)
     @State private var modelLists: [RemoteProvider: [String]] = [:]
     @State private var listError: String?
     @State private var loadingList = false
@@ -470,15 +475,8 @@ struct SettingsView: View {
                         ForEach(RemoteProvider.allCases) { Text($0.displayName).tag($0) }
                     }
                     // 送信先を変えたら、許可を取り直す (許可した相手と実際の送信先をずらさない)
-                    .onChange(of: provider) { _, p in
-                        Summarizer.provider = p
-                        remoteAllowed = false
-                    }
+                    .onChange(of: provider) { _, _ in remoteAllowed = false }
                     Toggle("文字起こしテキストを\(provider.recipient)に送信して要約する (文字起こしの後に自動で送信)", isOn: $remoteAllowed)
-                        // 許可した相手を記録する (Summarizer は記録した相手にしか送らない)
-                        .onChange(of: remoteAllowed) { _, on in
-                            UserDefaults.standard.set(on ? provider.rawValue : nil, forKey: Summarizer.remoteAllowedProviderKey)
-                        }
                     SecureField("\(provider.displayName) APIキー (\(provider.keyPlaceholder))", text: Binding(
                         get: { keys[provider] ?? "" }, set: { keys[provider] = $0 }))
                     Button(loadingList ? "モデル一覧を取得中…" : "使えるモデルを一覧から選ぶ") { fetchModels() }
@@ -501,7 +499,7 @@ struct SettingsView: View {
                 } header: {
                     Text("外部への送信 (任意・既定はオフ)")
                 } footer: {
-                    Text("オンにすると、「要約に使う」で外部APIを選んだとき、または端末内で要約できないときに、文字起こしテキストを\(provider.recipient)へ送ります。音声は送りません。APIキーは保存の前に、確認用の短い定型文 (文字起こしは含みません) と選んだモデル名を\(provider.recipient)へ送って接続を確かめ、成功したときだけこの端末のKeychainに保存します。送信先を変えると許可はオフに戻ります。モデルの一覧を取得するときは、APIキーだけを\(provider.recipient)へ送ります。")
+                    Text("オンにすると、「要約に使う」で外部APIを選んだとき、または端末内で要約できないときに、文字起こしテキストを\(provider.recipient)へ送ります。音声は送りません。APIキーは保存の前に、確認用の短い定型文 (文字起こしは含みません) と選んだモデル名を\(provider.recipient)へ送って接続を確かめ、成功したときだけこの端末のKeychainに保存します。送信先を変えると許可はオフに戻ります。「要約に使う」で外部APIを選んで保存すると、まだ要約の無い過去の録音も順に送ります。モデルの一覧を取得するときは、APIキーだけを\(provider.recipient)へ送ります。")
                 }
                 Section {
                     Picker("古い音声を自動で削除", selection: $retentionDays) {
@@ -520,12 +518,8 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("設定")
-            // 送信先ごとの許可に変える前の許可は、表示だけ有効に見えて送らない状態になるため、表示も切っておく
-            .onAppear {
-                if remoteAllowed, UserDefaults.standard.string(forKey: Summarizer.remoteAllowedProviderKey) != provider.rawValue {
-                    remoteAllowed = false
-                }
-            }
+            // 確認中に送信先や許可を変えて、確かめていない組み合わせを保存しない
+            .disabled(verifying)
             .toolbar {
                 Button(verifying ? "接続を確認中…" : "保存") { save() }
                     .disabled(verifying)
@@ -552,7 +546,7 @@ struct SettingsView: View {
             return !k.isEmpty && (k != Self.trimmed(Keychain.get(p.keyName))
                                   || m != Self.trimmed(UserDefaults.standard.string(forKey: Summarizer.modelKey(p))))
         }
-        let keysNow = keys, modelsNow = models
+        let keysNow = keys, modelsNow = models, providerNow = provider, preferenceNow = preference, allowedNow = remoteAllowed
         verifying = true
         saveError = nil
         saveTask = Task {
@@ -568,8 +562,11 @@ struct SettingsView: View {
                 }
             }
             guard !Task.isCancelled else { return }
-            Summarizer.provider = provider
-            Summarizer.preferred = preference
+            Summarizer.provider = providerNow
+            Summarizer.preferred = preferenceNow
+            // 許可した相手を記録する (Summarizer は記録した相手にしか送らない)
+            UserDefaults.standard.set(allowedNow, forKey: Summarizer.remoteAllowedKey)
+            UserDefaults.standard.set(allowedNow ? providerNow.rawValue : nil, forKey: Summarizer.remoteAllowedProviderKey)
             for p in RemoteProvider.allCases {
                 Keychain.set(Self.trimmed(keysNow[p]), for: p.keyName)
                 UserDefaults.standard.set(Self.trimmed(modelsNow[p]), forKey: Summarizer.modelKey(p))
@@ -693,7 +690,7 @@ struct DayReflectionView: View {
                 } else if let t = r.transcript {
                     progress = "録音を要約中 \(i + 1) / \(targets.count)"
                     do {
-                        let result = try await Summarizer.summarize(t, route: route)
+                        let result = try await Summarizer.reviewOrKeep(Summarizer.summarize(t, route: route))
                         s = result.text
                         // 削除された録音や、待つ間に文字起こし直された録音には保存しない
                         if r.isAlive, r.transcript == t {

@@ -47,11 +47,37 @@ enum Summarizer {
 
     /// 要約の結果と、どこで実行したか。
     struct Result {
-        let text: String
+        var text: String
         let route: SummaryRoute
         /// 結果を作った時点の送信先 (あとで送信先を変えても表記がずれないようにする)。
         var providerName = Summarizer.provider.displayName
-        var labeled: String { text + "\n\n(" + (route == .onDevice ? "端末内で要約" : "\(providerName) で要約") + ")" }
+        /// 端末内モデルで見直した (SummaryReviewer)。
+        var reviewed = false
+        /// 末尾の注記は「で要約)」で終える (ReflectionSections.isRouteLabel が本文と分けるため)。
+        var labeled: String {
+            text + "\n\n(" + (reviewed ? "見直し済み・" : "") + (route == .onDevice ? "端末内で要約" : "\(providerName) で要約") + ")"
+        }
+    }
+
+    /// 要約を端末内モデルで見直す (誤字・意味の分からない項目を直し、意味をなさない項目を消す)。
+    /// 端末内モデルが無い・見直せないときは元のまま返す (外部 API だけの利用者にも要約を出す)。混み合っているときは Busy を投げる。
+    /// 台帳 (TodoLedger) は保存した TODO の文言を鍵にするため、保存済みの要約には使わず、初めて保存する前にだけ呼ぶ。
+    static func review(_ r: Result) async throws -> Result {
+        guard let text = try await SummaryReviewer.review(r.text) else { return r }
+        var out = r
+        out.text = text
+        out.reviewed = true
+        return out
+    }
+
+    /// 利用者が押した要約用。混み合っていたら少し待って 1 回だけやり直し、それでも無理なら見直さずに返す。
+    static func reviewOrKeep(_ r: Result) async throws -> Result {
+        do {
+            return try await review(r)
+        } catch is SummaryReviewer.Busy {
+            try await Task.sleep(for: .seconds(3))
+            do { return try await review(r) } catch is SummaryReviewer.Busy { return r }
+        }
     }
 
     static var hasAPIKey: Bool { !(Keychain.get(keyName) ?? "").isEmpty }
@@ -206,8 +232,18 @@ enum Summarizer {
             throw CancellationError()
         } catch let e as URLError where e.code == .cancelled {
             throw CancellationError()
+        } catch let e as URLError {
+            // OS の文言は使わない (URL を含むことがあり、将来キーが混ざるのを避ける)
+            let why: String
+            switch e.code {
+            case .notConnectedToInternet, .networkConnectionLost: why = "インターネットに接続されていません"
+            case .timedOut: why = "応答がありません (時間切れ)"
+            case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed: why = "接続先が見つかりません"
+            default: why = "通信エラー (コード \(e.code.rawValue))"
+            }
+            throw Failure(message: "\(p.displayName) に接続できません: \(why)")
         } catch {
-            throw Failure(message: "\(p.displayName) に接続できません: \(error.localizedDescription)")
+            throw Failure(message: "\(p.displayName) に接続できません")
         }
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 200 else {
