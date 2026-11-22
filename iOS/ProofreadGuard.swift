@@ -20,7 +20,8 @@ enum ProofreadGuard {
             guard isSafe(wrong: f.wrong, right: right), out.components(separatedBy: f.wrong).count == 2 else { continue }
             out = out.replacingOccurrences(of: f.wrong, with: right)
         }
-        return accept(original: text, corrected: out) ? out : text
+        // 直しは 1 件ずつ読みが同じことを確かめているので、全体の長さでは判定しない (短いメモの「らいしゅう」→「来週」を通す)
+        return out
     }
 
     static func isSafe(wrong: String, right: String) -> Bool {
@@ -30,7 +31,9 @@ enum ProofreadGuard {
         // 誤変換は同じ音の別の字。読みが完全に同じ直しだけを当てる (「日程超生」→「日程調整」、「らいしゅう」→「来週」)。
         // 読みが 1 字でも違えば当てない (「上がる」→「下がる」、「加藤」→「佐藤」のように意味が変わるため)
         let r = reading(wrong)
-        return !r.isEmpty && r == reading(right)
+        guard !r.isEmpty, r == reading(right) else { return false }
+        // 読みが同じでも、否定の有無 (「しない」→「市内」) や記号 (「？」の削除で問いが言い切りになる) は変えない
+        return negations(wrong) == negations(right) && symbols(wrong) == symbols(right)
     }
 
     /// 校正で許す文字数の増減 (句読点の追加と誤変換の直しなら、この幅に収まる)。
@@ -79,5 +82,13 @@ enum ProofreadGuard {
             }
         }
         return out.lowercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    private static func negations(_ s: String) -> Int {
+        ["ない", "ません", "なかっ", "ぬ"].reduce(0) { $0 + s.components(separatedBy: $1).count - 1 }
+    }
+
+    private static func symbols(_ s: String) -> String {
+        s.filter { $0.isPunctuation || $0.isSymbol }
     }
 }

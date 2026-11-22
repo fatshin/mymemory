@@ -48,6 +48,8 @@ final class ProofreadGuardTests: XCTestCase {
         XCTAssertTrue(ProofreadGuard.isSafe(wrong: "日程超生", right: "日程調整"))
         XCTAssertFalse(ProofreadGuard.isSafe(wrong: "わ", right: "は"), "1 字の語は直さない")
         XCTAssertFalse(ProofreadGuard.isSafe(wrong: "上がる", right: "下がる"))
+        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "しない", right: "市内"), "否定を消す直しは当てない")
+        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "やっておく？", right: "やっておく"), "問いを言い切りにする直しは当てない")
         XCTAssertFalse(ProofreadGuard.isSafe(wrong: "加藤さん", right: "佐藤さん"))
         XCTAssertFalse(ProofreadGuard.isSafe(wrong: "送ります", right: "送りません"))
         XCTAssertFalse(ProofreadGuard.isSafe(wrong: "三時から", right: "二時から"))
@@ -60,5 +62,10 @@ final class ProofreadGuardTests: XCTestCase {
     func testSkipsFixWhenWrongAppearsMoreThanOnce() {
         let text = "会議しつの予約と、しつもんの回答"
         XCTAssertEqual(ProofreadGuard.apply([.init(wrong: "しつ", right: "室")], to: text), text)
+    }
+
+    /// 短いメモでも、読みが同じかな→漢字の直しは当てる (全体の文字数が大きく減っても捨てない)。
+    func testShortMemoKanaToKanji() {
+        XCTAssertEqual(ProofreadGuard.apply([.init(wrong: "けいやくしょ", right: "契約書")], to: "けいやくしょ"), "契約書")
     }
 }

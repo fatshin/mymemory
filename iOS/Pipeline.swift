@@ -361,21 +361,25 @@ final class Pipeline: NSObject, ObservableObject {
                 }
                 var text = result.text
                 var raw: String?
-                if !text.isEmpty, PowerPolicy.shouldProofread(charge: currentCharge(), isSimulator: isSimulator) {
+                var proofreadDone = false
+                if !text.isEmpty, canProofreadNow {
                     modelStatus = "文字起こしを校正中…"
                     let fileEnd = Int.max / 64  // 進捗は録音の終わりまで (校正中も継続タスクへ更新を送る)
-                    // 校正は必須ではない。時間切れで取り消されたら、終わった文字起こしを捨てずにそのまま保存する
-                    let proofread = (try? await Proofreader.proofread(text) { [weak self] in
+                    // 校正は必須ではない。時間切れで取り消されたら、終わった文字起こしを捨てずに保存し、校正は後で行う
+                    if let proofread = try? await Proofreader.proofread(text, onChunk: { [weak self] in
                         Task { @MainActor in self?.reportProgress(windowIndex: fileEnd) }
-                    }) ?? text
-                    if proofread != text {
-                        raw = text
-                        text = proofread
+                    }) {
+                        proofreadDone = true
+                        if proofread != text {
+                            raw = text
+                            text = proofread
+                        }
                     }
                     modelStatus = "準備完了"
                 }
                 rec.transcript = text
                 rec.rawTranscript = raw
+                rec.needsProofread = !text.isEmpty && !proofreadDone
                 // 文字が残らなかった理由を見えるようにする (文字起こしに成功した見た目にしない)
                 rec.errorMessage = result.text.isEmpty ? result.emptyReason : nil
                 rec.summary = nil  // 文字起こし直したら古い要約は使わない (振り返りで再利用されるため)
@@ -416,7 +420,42 @@ final class Pipeline: NSObject, ObservableObject {
             }
             try? context.save()
         }
+        if !Task.isCancelled { await proofreadBacklog() }
         if !Task.isCancelled { await summarizeBacklog() }
+    }
+
+    /// 校正してよい状態か (外部電源につながっていて、端末内モデルが使える)。
+    private var canProofreadNow: Bool {
+        PowerPolicy.shouldProofread(charge: currentCharge(), isSimulator: isSimulator) && OnDeviceSummarizer.isAvailable
+    }
+
+    /// 1 回の処理で後から校正する録音の上限。
+    static let proofreadBacklogLimit = 10
+
+    /// 電池で処理した・時間切れで中断した録音を、充電中に校正する。要約より先に行い、要約は校正後の文から作る。
+    /// 継続タスク (利用者の「今すぐ」) の中では行わない (進捗が動かず、OS に止められるおそれがあるため)。
+    private func proofreadBacklog() async {
+        guard progressSink == nil, canProofreadNow else { return }
+        var d = FetchDescriptor<Recording>(
+            predicate: #Predicate { $0.needsProofread && $0.statusRaw == "done" },
+            sortBy: [SortDescriptor(\.startedAt, order: .reverse)])
+        d.fetchLimit = Self.proofreadBacklogLimit
+        guard let recs = try? context.fetch(d), !recs.isEmpty else { return }
+        defer { if modelStatus.hasPrefix("文字起こしを校正中") { modelStatus = "準備完了" } }
+        for (i, rec) in recs.enumerated() {
+            guard !Task.isCancelled, canProofreadNow else { return }
+            guard rec.isAlive, let t = rec.transcript, !t.isEmpty else { rec.needsProofread = false; continue }
+            modelStatus = "文字起こしを校正中 \(i + 1) / \(recs.count)"
+            guard let fixed = try? await Proofreader.proofread(t) else { return }  // 取り消し: 次の機会に回す
+            // 待つ間に削除・文字起こし直しされた録音には上書きしない
+            guard rec.isAlive, rec.transcript == t else { continue }
+            if fixed != t {
+                rec.rawTranscript = t
+                rec.transcript = fixed
+            }
+            rec.needsProofread = false
+            try? context.save()
+        }
     }
 
     /// 1 回の処理で自動要約する録音の上限 (外部 API の呼び出し回数と時間を抑える)。
