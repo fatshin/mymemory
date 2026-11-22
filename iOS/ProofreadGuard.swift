@@ -85,7 +85,8 @@ enum ProofreadGuard {
     }
 
     private static func negations(_ s: String) -> Int {
-        ["ない", "ません", "なかっ", "ぬ"].reduce(0) { $0 + s.components(separatedBy: $1).count - 1 }
+        // 「ず」(せず) や漢字の否定 (不・無・未・非) も数える。数え過ぎは直しを当てないだけで、文は壊れない
+        ["ない", "ません", "なかっ", "ず", "不", "無", "未", "非"].reduce(0) { $0 + s.components(separatedBy: $1).count - 1 }
     }
 
     private static func symbols(_ s: String) -> String {

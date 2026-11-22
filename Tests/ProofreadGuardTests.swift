@@ -49,6 +49,8 @@ final class ProofreadGuardTests: XCTestCase {
         XCTAssertFalse(ProofreadGuard.isSafe(wrong: "わ", right: "は"), "1 字の語は直さない")
         XCTAssertFalse(ProofreadGuard.isSafe(wrong: "上がる", right: "下がる"))
         XCTAssertFalse(ProofreadGuard.isSafe(wrong: "しない", right: "市内"), "否定を消す直しは当てない")
+        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "かのう", right: "不可能"), "読みが違う否定は当てない")
+        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "せず", right: "背酢"), "「ず」の否定を消す直しは当てない")
         XCTAssertFalse(ProofreadGuard.isSafe(wrong: "やっておく？", right: "やっておく"), "問いを言い切りにする直しは当てない")
         XCTAssertFalse(ProofreadGuard.isSafe(wrong: "加藤さん", right: "佐藤さん"))
         XCTAssertFalse(ProofreadGuard.isSafe(wrong: "送ります", right: "送りません"))

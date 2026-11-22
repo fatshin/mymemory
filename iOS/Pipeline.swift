@@ -449,7 +449,7 @@ final class Pipeline: NSObject, ObservableObject {
             guard rec.isAlive else { continue }
             guard let t = rec.transcript, !t.isEmpty else { rec.needsProofread = false; continue }
             modelStatus = "文字起こしを校正中 \(i + 1) / \(recs.count)"
-            guard let fixed = try? await Proofreader.proofread(t) else { return }  // 取り消し: 次の機会に回す
+            guard let fixed = try? await Proofreader.proofread(t) else { return }  // 取り消し・一時的な失敗: 校正待ちのまま次の機会に回す
             // 待つ間に削除・文字起こし直しされた録音には上書きしない
             guard rec.isAlive, rec.transcript == t, rec.summary == nil else { continue }
             if fixed != t {
