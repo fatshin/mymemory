@@ -4,7 +4,7 @@ Apple Watch で録音 → iPhone で端末内の文字起こし (日本語, Whis
 
 ## 構成
 - `Watch/` : 録音 (AVAudioEngine を止めずに 10 分ごとにファイルを切り替え、`UIBackgroundModes: audio` で画面消灯中も継続) → WatchConnectivity 転送
-- `iOS/`   : 受信 → SwiftData 保存 → WhisperKit 文字起こし → 要約 (端末内を優先。外部 API は明示的な許可 + API キーがあるときだけ、テキストのみ送信)。決定事項・TODO の一覧 (要約から抽出)、書き出し (Markdown)、初回同意、古い音声の自動削除 (任意)
+- `iOS/`   : 受信 → SwiftData 保存 → WhisperKit 文字起こし → 要約 (既定は端末内。設定と要約のたびに端末内か外部 API かを選べる。外部 API は明示的な許可 + 疎通確認済みの API キーがあるときだけ、テキストのみ送信)。決定事項・TODO の一覧 (要約から抽出)、書き出し (Markdown)、初回同意、古い音声の自動削除 (任意)
 - `Shared/`: 転送メタデータキー、録音の区切り (`ChunkWriter`)
 - `project.yml`: XcodeGen 定義
 

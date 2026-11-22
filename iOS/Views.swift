@@ -277,7 +277,8 @@ struct DetailView: View {
     let rec: Recording
     @State private var summarizing = false
     @State private var job: Task<Void, Never>?
-    @State private var shownRoute: SummaryRoute?
+    /// 今使える要約の経路 (経路ごとにボタンを出し、押したほうで要約する)。
+    @State private var routes: [SummaryRoute] = []
     @State private var error: String?
     @Environment(\.scenePhase) private var scenePhase
     @State private var level: AudioLevel?
@@ -313,10 +314,13 @@ struct DetailView: View {
         .toolbar {
             ToolbarItem {
                 Menu {
-                    Button(summarizing ? "要約中…" : "要約" + routeSuffix(shownRoute)) {
-                        job = Task { await summarize() }
+                    // 端末内と外部 API の両方が使えるときは両方を出し、要約のたびに選べるようにする
+                    ForEach(routes.isEmpty ? [nil] : routes.map(Optional.some), id: \.self) { r in
+                        Button(summarizing ? "要約中…" : "要約" + routeSuffix(r)) {
+                            job = Task { await summarize(route: r) }
+                        }
+                        .disabled(rec.transcript == nil || summarizing)
                     }
-                    .disabled(rec.transcript == nil || summarizing)
                     ShareLink(item: ExportFormatter.recording(rec.exportEntry)) {
                         Label("書き出し", systemImage: "square.and.arrow.up")
                     }
@@ -332,8 +336,8 @@ struct DetailView: View {
                 } label: { Image(systemName: "ellipsis.circle") }
             }
         }
-        .onAppear { shownRoute = try? Summarizer.currentRoute() }
-        .onChange(of: scenePhase) { _, p in if p == .active { shownRoute = try? Summarizer.currentRoute() } }
+        .onAppear { routes = Summarizer.usableRoutes() }
+        .onChange(of: scenePhase) { _, p in if p == .active { routes = Summarizer.usableRoutes() } }
         .task(id: rec.fileName) {
             let url = rec.fileURL
             level = await Task.detached(priority: .utility) { AudioLevel.measure(url) }.value
@@ -341,12 +345,12 @@ struct DetailView: View {
         .onDisappear { job?.cancel() }  // 画面を離れたら要約を止めて電力を使わない
     }
 
-    private func summarize() async {
+    private func summarize(route tapped: SummaryRoute?) async {
         guard let t = rec.transcript else { return }
         summarizing = true; error = nil
         defer { summarizing = false }
         do {
-            let route = try confirmedRoute(shown: shownRoute) { shownRoute = $0 }
+            let route = try pickRoute(tapped) { routes = $0 }
             let result = try await Summarizer.summarize(t, route: route)
             // 削除された録音や、待つ間に文字起こし直された録音には書かない
             guard rec.isAlive, rec.transcript == t else { return }
@@ -367,6 +371,15 @@ func routeSuffix(_ route: SummaryRoute?) -> String {
     case .remote: return " (外部APIへ送信)"
     case nil: return ""
     }
+}
+
+/// 押したボタンの経路を、押した時点で使えることを確かめて返す。経路の無いボタン (nil) は理由を示して止める。
+/// 使える経路が変わっていたら表示を更新する。
+@MainActor
+func pickRoute(_ tapped: SummaryRoute?, update: ([SummaryRoute]) -> Void) throws -> SummaryRoute {
+    defer { update(Summarizer.usableRoutes()) }
+    if let tapped { return try Summarizer.confirmUsable(tapped) }
+    return try confirmedRoute(shown: nil) { _ in }
 }
 
 /// ボタンに表示した経路とタップ時点の経路が一致するときだけ実行する。
@@ -402,6 +415,11 @@ struct SettingsView: View {
     @State private var modelLists: [RemoteProvider: [String]] = [:]
     @State private var listError: String?
     @State private var loadingList = false
+    @State private var preference = Summarizer.preferred
+    /// 保存前の疎通確認の状態。確認に通るまで Keychain にも UserDefaults にも書かない。
+    @State private var verifying = false
+    @State private var saveError: String?
+    @State private var saveTask: Task<Void, Never>?
     @AppStorage(RetentionPolicy.key) private var retentionDays = 0
     @EnvironmentObject var pipeline: Pipeline
     @Environment(\.dismiss) private var dismiss
@@ -427,14 +445,25 @@ struct SettingsView: View {
                         }
                     }
                 }
-                Section("要約") {
+                Section {
                     switch OnDeviceSummarizer.status {
                     case .available:
-                        Label("端末内で要約 (通信なし)", systemImage: "iphone")
+                        Label("端末内モデルを利用できます (通信なし)", systemImage: "iphone")
                     case .unavailable(let reason):
                         Label(reason, systemImage: "exclamationmark.triangle")
                         Text("APIキーを登録し送信を許可すると、\(Summarizer.remoteRecipient)で要約します").font(.footnote)
                     }
+                    Picker("要約に使う", selection: $preference) {
+                        Text("端末内 (通信なし)").tag(SummaryRoute.onDevice)
+                        Text("外部API (\(provider.displayName))").tag(SummaryRoute.remote)
+                    }
+                    if preference == .remote, !(remoteAllowed && hasSavedKey) {
+                        Text("APIキーを保存し、下の送信を許可するまでは端末内で要約します").font(.footnote).foregroundStyle(.orange)
+                    }
+                } header: {
+                    Text("要約")
+                } footer: {
+                    Text("自動の要約と振り返りはここで選んだ経路を使います。両方使えるときは、録音の詳細画面と振り返りでも要約のたびに選べます。")
                 }
                 Section {
                     Picker("送信先", selection: $provider) {
@@ -472,7 +501,7 @@ struct SettingsView: View {
                 } header: {
                     Text("外部への送信 (任意・既定はオフ)")
                 } footer: {
-                    Text("オンにすると、端末内で要約できないときに限り、文字起こしテキストを\(provider.recipient)へ送ります。音声は送りません。APIキーはこの端末のKeychainにのみ保存します。送信先を変えると許可はオフに戻ります。モデルの一覧を取得するときは、APIキーだけを\(provider.recipient)へ送ります。")
+                    Text("オンにすると、「要約に使う」で外部APIを選んだとき、または端末内で要約できないときに、文字起こしテキストを\(provider.recipient)へ送ります。音声は送りません。APIキーは保存の前に、確認用の短い定型文 (文字起こしは含みません) と選んだモデル名を\(provider.recipient)へ送って接続を確かめ、成功したときだけこの端末のKeychainに保存します。送信先を変えると許可はオフに戻ります。モデルの一覧を取得するときは、APIキーだけを\(provider.recipient)へ送ります。")
                 }
                 Section {
                     Picker("古い音声を自動で削除", selection: $retentionDays) {
@@ -498,15 +527,54 @@ struct SettingsView: View {
                 }
             }
             .toolbar {
-                Button("保存") {
-                    Summarizer.provider = provider
-                    for p in RemoteProvider.allCases {
-                        Keychain.set((keys[p] ?? "").trimmingCharacters(in: .whitespacesAndNewlines), for: p.keyName)
-                        UserDefaults.standard.set((models[p] ?? "").trimmingCharacters(in: .whitespacesAndNewlines), forKey: Summarizer.modelKey(p))
-                    }
-                    dismiss()
+                Button(verifying ? "接続を確認中…" : "保存") { save() }
+                    .disabled(verifying)
+            }
+            .interactiveDismissDisabled(verifying)
+            .onDisappear { saveTask?.cancel() }
+            .alert("保存できません", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
+                Button("OK", role: .cancel) { saveError = nil }
+            } message: {
+                Text((saveError ?? "") + "\nAPIキーとモデル名は保存していません。")
+            }
+        }
+    }
+
+    private var hasSavedKey: Bool { !(Keychain.get(provider.keyName) ?? "").isEmpty }
+
+    private static func trimmed(_ s: String?) -> String { (s ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// キーかモデルを変えた送信先は、入力値で疎通を確かめてから保存する。1 つでも失敗したら何も書かず、画面も閉じない。
+    /// 空にしたキーは削除なので確かめない。
+    private func save() {
+        let toVerify = RemoteProvider.allCases.filter { p in
+            let k = Self.trimmed(keys[p]), m = Self.trimmed(models[p])
+            return !k.isEmpty && (k != Self.trimmed(Keychain.get(p.keyName))
+                                  || m != Self.trimmed(UserDefaults.standard.string(forKey: Summarizer.modelKey(p))))
+        }
+        let keysNow = keys, modelsNow = models
+        verifying = true
+        saveError = nil
+        saveTask = Task {
+            defer { verifying = false }
+            for p in toVerify {
+                do {
+                    try await Summarizer.verifyConnection(p, key: keysNow[p] ?? "", model: modelsNow[p] ?? "")
+                } catch is CancellationError {
+                    return
+                } catch {
+                    saveError = error.localizedDescription
+                    return
                 }
             }
+            guard !Task.isCancelled else { return }
+            Summarizer.provider = provider
+            Summarizer.preferred = preference
+            for p in RemoteProvider.allCases {
+                Keychain.set(Self.trimmed(keysNow[p]), for: p.keyName)
+                UserDefaults.standard.set(Self.trimmed(modelsNow[p]), forKey: Summarizer.modelKey(p))
+            }
+            dismiss()
         }
     }
 
@@ -543,7 +611,7 @@ struct DayReflectionView: View {
     @State private var loading = false
     @State private var progress: String?
     @State private var job: Task<Void, Never>?
-    @State private var shownRoute: SummaryRoute?
+    @State private var routes: [SummaryRoute] = []
     @State private var error: String?
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var ledgerStore = TodoLedgerStore.shared
@@ -584,25 +652,35 @@ struct DayReflectionView: View {
                 Image(systemName: "square.and.arrow.up")
             }
             .accessibilityLabel("1日分を書き出し")
-            Button(loading ? "生成中…" : "振り返り生成" + routeSuffix(shownRoute)) { job = Task { await run() } }
+            // 端末内と外部 API の両方が使えるときは、生成のたびに選べるようメニューにする
+            if routes.count > 1 {
+                Menu(loading ? "生成中…" : "振り返り生成") {
+                    ForEach(routes, id: \.self) { r in
+                        Button("振り返り生成" + routeSuffix(r)) { job = Task { await run(route: r) } }
+                    }
+                }
                 .disabled(loading || timeline.isEmpty)
+            } else {
+                Button(loading ? "生成中…" : "振り返り生成" + routeSuffix(routes.first)) { job = Task { await run(route: routes.first) } }
+                    .disabled(loading || timeline.isEmpty)
+            }
         }
         .onAppear {
-            shownRoute = try? Summarizer.currentRoute()
+            routes = Summarizer.usableRoutes()
             if text == nil { text = ReflectionStore.load(day)?.text }
         }
-        .onChange(of: scenePhase) { _, p in if p == .active { shownRoute = try? Summarizer.currentRoute() } }
+        .onChange(of: scenePhase) { _, p in if p == .active { routes = Summarizer.usableRoutes() } }
         .onDisappear { job?.cancel() }  // 画面を離れたら残りの録音の要約を止める
     }
 
     /// 録音ごとの要約を再利用し、無い録音だけをその場で要約して保存してから、1 日分を束ねる。
     /// 毎回すべての文字起こしを要約し直すより、電力と時間を抑えられる。
-    private func run() async {
+    private func run(route tapped: SummaryRoute?) async {
         loading = true; error = nil
         defer { loading = false; progress = nil }
         do {
             // 経路は開始時に 1 回だけ決める。途中で端末内と外部 API が混ざらないようにする
-            let route = try confirmedRoute(shown: shownRoute) { shownRoute = $0 }
+            let route = try pickRoute(tapped) { routes = $0 }
             let targets = items.filter { !($0.transcript ?? "").isEmpty }
             var lines: [String] = []
             var failed = 0

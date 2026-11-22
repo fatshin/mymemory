@@ -36,24 +36,44 @@ final class TextChunkerTests: XCTestCase {
     }
 }
 
-/// 端末内を最優先し、通信と API キーは端末内が使えないときだけ使う方針を固定する。
+/// 利用者が選んだ経路を優先し、使えないときだけもう一方へ移る方針を固定する。
 final class SummaryRouteTests: XCTestCase {
-    func testOnDeviceWinsEvenWithAPIKeyAndPermission() {
-        XCTAssertEqual(SummaryRoute.choose(onDeviceAvailable: true, hasAPIKey: true, remoteAllowed: true), .onDevice)
-        XCTAssertEqual(SummaryRoute.choose(onDeviceAvailable: true, hasAPIKey: false, remoteAllowed: false), .onDevice)
+    func testPreferredOnDeviceWinsEvenWithAPIKeyAndPermission() {
+        XCTAssertEqual(SummaryRoute.choose(preferred: .onDevice, onDeviceAvailable: true, hasAPIKey: true, remoteAllowed: true), .onDevice)
+        XCTAssertEqual(SummaryRoute.choose(preferred: .onDevice, onDeviceAvailable: true, hasAPIKey: false, remoteAllowed: false), .onDevice)
+    }
+
+    /// 外部 API を選んだら、端末内モデルが使える端末でも外部 API で要約する (以前は端末内が常に勝ち、送信されなかった)。
+    func testPreferredRemoteIsUsedEvenWhenOnDeviceIsAvailable() {
+        XCTAssertEqual(SummaryRoute.choose(preferred: .remote, onDeviceAvailable: true, hasAPIKey: true, remoteAllowed: true), .remote)
+    }
+
+    /// 外部 API を選んでもキーか許可が無ければ、送らずに端末内へ戻る。
+    func testPreferredRemoteFallsBackToOnDeviceWithoutKeyOrPermission() {
+        XCTAssertEqual(SummaryRoute.choose(preferred: .remote, onDeviceAvailable: true, hasAPIKey: true, remoteAllowed: false), .onDevice)
+        XCTAssertEqual(SummaryRoute.choose(preferred: .remote, onDeviceAvailable: true, hasAPIKey: false, remoteAllowed: true), .onDevice)
     }
 
     func testFallsBackToRemoteOnlyWithKeyAndPermission() {
-        XCTAssertEqual(SummaryRoute.choose(onDeviceAvailable: false, hasAPIKey: true, remoteAllowed: true), .remote)
+        XCTAssertEqual(SummaryRoute.choose(preferred: .onDevice, onDeviceAvailable: false, hasAPIKey: true, remoteAllowed: true), .remote)
     }
 
     /// 審査ガイドライン 5.1.2(i): キーがあっても、利用者が許可していなければ外部へ送らない。
     func testNeverSendsWithoutExplicitPermission() {
-        XCTAssertNil(SummaryRoute.choose(onDeviceAvailable: false, hasAPIKey: true, remoteAllowed: false))
+        for p in SummaryRoute.allCases {
+            XCTAssertNil(SummaryRoute.choose(preferred: p, onDeviceAvailable: false, hasAPIKey: true, remoteAllowed: false))
+        }
+        XCTAssertEqual(SummaryRoute.usableRoutes(onDeviceAvailable: true, hasAPIKey: true, remoteAllowed: false), [.onDevice])
     }
 
     func testNoRouteWhenNeitherIsAvailable() {
-        XCTAssertNil(SummaryRoute.choose(onDeviceAvailable: false, hasAPIKey: false, remoteAllowed: true))
-        XCTAssertNil(SummaryRoute.choose(onDeviceAvailable: false, hasAPIKey: false, remoteAllowed: false))
+        for p in SummaryRoute.allCases {
+            XCTAssertNil(SummaryRoute.choose(preferred: p, onDeviceAvailable: false, hasAPIKey: false, remoteAllowed: true))
+            XCTAssertNil(SummaryRoute.choose(preferred: p, onDeviceAvailable: false, hasAPIKey: false, remoteAllowed: false))
+        }
+    }
+
+    func testUsableRoutesListsBothWhenReady() {
+        XCTAssertEqual(SummaryRoute.usableRoutes(onDeviceAvailable: true, hasAPIKey: true, remoteAllowed: true), [.onDevice, .remote])
     }
 }

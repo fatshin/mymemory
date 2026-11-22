@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-/// 要約の入口。端末内 (Foundation Models) を優先し、使えないときだけ BYOK の外部 API を使う。
+/// 要約の入口。設定で選んだ経路 (端末内の Foundation Models か、BYOK の外部 API) を使い、使えないときはもう一方を使う。
 /// 外部 API へ送るのは文字起こしテキストのみ (音声は送らない)。
 enum Keychain {
     static func set(_ value: String, for key: String) {
@@ -68,16 +68,40 @@ enum Summarizer {
     /// 送信先の表記。審査ガイドライン 5.1.2(i) に沿って送信先の事業者名を示す。
     static var remoteRecipient: String { provider.recipient }
 
-    /// 端末内が使えれば端末内、使えなければ API キーで外部 API。どちらも無ければ理由を返す。
-    /// 端末内モデルが準備中なら外部 API へ切り替えず、待つよう伝える (利用者の意図しない送信を避ける)。
+    /// 要約に使う経路の選択 (設定画面)。既定は端末内。外部 API はキーと送信の許可がそろったときだけ使う。
+    static let preferenceKey = "summaryPreference"
+    static var preferred: SummaryRoute {
+        get { SummaryRoute(rawValue: UserDefaults.standard.string(forKey: preferenceKey) ?? "") ?? .onDevice }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: preferenceKey) }
+    }
+
+    /// 今使える経路 (要約ボタンを経路ごとに出すのに使う)。設定で選んだ経路を先にする。
+    static func usableRoutes() -> [SummaryRoute] {
+        let pref = preferred
+        let usable = SummaryRoute.usableRoutes(onDeviceAvailable: OnDeviceSummarizer.isAvailable, hasAPIKey: hasAPIKey, remoteAllowed: remoteAllowed)
+        return usable.filter { $0 == pref } + usable.filter { $0 != pref }
+    }
+
+    /// 押したボタンの経路が、押した時点でも使えるときだけ返す (表示が古いまま外部 API へ送らない)。
+    static func confirmUsable(_ route: SummaryRoute) throws -> SummaryRoute {
+        guard usableRoutes().contains(route) else {
+            throw Failure(message: route == .remote
+                ? "\(remoteRecipient)への送信が使えなくなりました (APIキーか送信の許可を設定で確認してください)"
+                : "端末内モデルが使えなくなりました。表示を確認してもう一度押してください")
+        }
+        return route
+    }
+
+    /// 選んだ経路が使えればそれを、使えなければもう一方を使う。どちらも無ければ理由を返す。
+    /// 端末内を選んでいてモデルが準備中なら外部 API へ切り替えず、待つよう伝える (利用者の意図しない送信を避ける)。
     static func currentRoute() throws -> SummaryRoute {
+        let key = hasAPIKey, allowed = remoteAllowed, pref = preferred
+        if pref == .remote, key, allowed { return .remote }
         if OnDeviceSummarizer.isPreparing {
             throw Failure(message: "端末内モデルを準備中です。しばらく待ってから再試行してください")
         }
-        let onDevice = OnDeviceSummarizer.isAvailable
-        if onDevice { return .onDevice }
-        let key = hasAPIKey, allowed = remoteAllowed
-        if let route = SummaryRoute.choose(onDeviceAvailable: onDevice, hasAPIKey: key, remoteAllowed: allowed) {
+        if let route = SummaryRoute.choose(preferred: pref, onDeviceAvailable: OnDeviceSummarizer.isAvailable,
+                                           hasAPIKey: key, remoteAllowed: allowed) {
             return route
         }
         if case .unavailable(let reason) = OnDeviceSummarizer.status {
@@ -161,6 +185,48 @@ enum Summarizer {
         let unique = ids.filter { seen.insert($0).inserted }
         if unique.isEmpty { throw Failure(message: "\(p.displayName) で使えるモデルが見つかりませんでした") }
         return unique
+    }
+
+    /// 保存前の疎通確認に送る文。文字起こしや個人の情報は含めない。
+    static let connectionTestPrompt = "接続確認です。「OK」とだけ返してください。"
+
+    /// 設定画面で APIキーを保存する前の疎通確認。入力欄のキーと選んだモデルで、固定の短い文 (connectionTestPrompt) だけを送る。
+    /// 文字起こしは送らないため、送信の許可より前でも呼べる。成功しなければ例外を投げ、呼び出し側は保存しない。
+    static func verifyConnection(_ p: RemoteProvider, key: String, model: String) async throws {
+        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { throw Failure(message: "APIキーを入力してください") }
+        let m = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let usedModel = m.isEmpty ? p.defaultModel : m
+        var req = try p.request(key: key, model: usedModel, prompt: connectionTestPrompt)
+        req.timeoutInterval = 30
+        let data: Data, resp: URLResponse
+        do {
+            (data, resp) = try await URLSession.shared.data(for: req)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let e as URLError where e.code == .cancelled {
+            throw CancellationError()
+        } catch {
+            throw Failure(message: "\(p.displayName) に接続できません: \(error.localizedDescription)")
+        }
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200 else {
+            // 応答本文は出さない (キーの一部が含まれることがあるため)
+            throw Failure(message: "\(p.displayName) の接続確認に失敗: HTTP \(code)\(connectionHint(code, model: usedModel))")
+        }
+        do { _ = try p.parse(data) } catch {
+            throw Failure(message: "\(p.displayName) の応答を読めませんでした (モデル \(usedModel) が要約に使えるか確認してください)")
+        }
+    }
+
+    /// HTTP の状態から、利用者が直すべき箇所を示す。
+    static func connectionHint(_ code: Int, model: String) -> String {
+        switch code {
+        case 401, 403: return " (APIキーを確認してください)"
+        case 400, 404: return " (モデル名 \(model) を確認してください)"
+        case 429: return " (利用上限か残高を確認してください)"
+        default: return ""
+        }
     }
 
     private static func call(prompt: String) async throws -> String {

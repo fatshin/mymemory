@@ -36,16 +36,21 @@ enum TextChunker {
     }
 }
 
-/// 要約をどこで実行するか。端末内を優先し、使えなければ利用者の API キーで外部 API を使う。
-enum SummaryRoute: Equatable {
+/// 要約をどこで実行するか。設定で選んだ経路を使い、使えなければもう一方を使う (外部 API は利用者のキーと送信の許可が要る)。
+enum SummaryRoute: String, Equatable, CaseIterable {
     case onDevice
     case remote
 
-    /// 外部 API は、キーがあり、かつ利用者が送信を明示的に許可したときだけ選ぶ (審査ガイドライン 5.1.2(i))。
+    /// 利用者が選んだ経路が使えればそれを、使えなければもう一方を選ぶ。
+    /// 外部 API は、キーがあり、かつ利用者が送信を明示的に許可したときだけ使える (審査ガイドライン 5.1.2(i))。
     /// どちらも使えなければ nil (呼び出し側が理由を表示する)。
-    static func choose(onDeviceAvailable: Bool, hasAPIKey: Bool, remoteAllowed: Bool) -> SummaryRoute? {
-        if onDeviceAvailable { return .onDevice }
-        if hasAPIKey && remoteAllowed { return .remote }
-        return nil
+    static func choose(preferred: SummaryRoute, onDeviceAvailable: Bool, hasAPIKey: Bool, remoteAllowed: Bool) -> SummaryRoute? {
+        let usable = usableRoutes(onDeviceAvailable: onDeviceAvailable, hasAPIKey: hasAPIKey, remoteAllowed: remoteAllowed)
+        return usable.contains(preferred) ? preferred : usable.first
+    }
+
+    /// 今使える経路 (端末内が先)。
+    static func usableRoutes(onDeviceAvailable: Bool, hasAPIKey: Bool, remoteAllowed: Bool) -> [SummaryRoute] {
+        (onDeviceAvailable ? [.onDevice] : []) + (hasAPIKey && remoteAllowed ? [.remote] : [])
     }
 }
