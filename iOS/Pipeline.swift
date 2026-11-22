@@ -54,6 +54,22 @@ final class Pipeline: NSObject, ObservableObject {
     /// 自動要約は文字起こしとは別に動かす (外部 API の待ちで文字起こしと「今すぐ文字起こし」を止めない)。
     private var summaryTask: Task<Void, Never>?
     private var summaryToken = UUID()
+    /// アプリを開いて前面にあるあいだは、見ている利用者の操作とみなし、非充電でも文字起こしと要約を進める
+    /// (残量 20% 以上・低電力モードでないとき)。背景に回ったら通常の電力判定 (充電中だけ) に戻る。
+    private(set) var foregroundActive = false
+
+    /// 前面に来たら、保留の文字起こしと要約の無い録音の処理を始める。
+    func setForeground(_ active: Bool) {
+        foregroundActive = active
+        guard active else { return }
+        if !queue.isEmpty, canTranscribeNow(userInitiated: foregroundRun) {
+            startDrain()
+        } else if drainTask == nil {
+            startSummaryBacklog()
+        }
+    }
+
+    private var foregroundRun: Bool { foregroundActive && !ProcessInfo.processInfo.isLowPowerModeEnabled }
 
     /// 日本語向け。モデル名はWhisperKit側の対応表に依存 (要確認)。
     static let modelName = "large-v3-v20240930_626MB"
@@ -207,7 +223,8 @@ final class Pipeline: NSObject, ObservableObject {
         if let running = drainTask { return running }
         // 文字起こしを優先する。文字起こす録音があるときだけ、走っている自動要約を止めて後で始め直す
         // (要約だけの drain で止めると、外部 API の結果を捨てて送り直すことになる)
-        if !queue.isEmpty { stopSummaryBacklog() }
+        // 電池が足りず文字起こしできないときは止めない (前面への出入りや電池の通知のたびに要約を捨てない)
+        if !queue.isEmpty, canTranscribeNow(userInitiated: userRun.isActive || foregroundRun) { stopSummaryBacklog() }
         let task = Task { @MainActor [self] in
             await runDrain()
             drainTask = nil
@@ -332,7 +349,7 @@ final class Pipeline: NSObject, ObservableObject {
         if !queue.isEmpty { BackgroundTranscribe.schedule(needsNetwork: !modelOnDisk) }
         while !queue.isEmpty, !Task.isCancelled {
             if modelLoadFailures >= Self.maxModelLoadFailures { return }
-            let forced = userRun.covers(queue.first)
+            let forced = userRun.covers(queue.first) || foregroundRun
             guard canTranscribeNow(userInitiated: forced) else {
                 waitingForPower = true
                 modelStatus = forced
@@ -499,7 +516,7 @@ final class Pipeline: NSObject, ObservableObject {
     static let autoSummaryInterval: TimeInterval = 120
 
     /// 文字起こし済みで要約の無い録音を、新しい順に要約して保存する (最初の画面とやることの一覧に使う)。
-    /// 外部 API は利用者が送信を許可したときだけ (Summarizer が経路を決める)。端末内モデルは電力を使うため充電中だけ。
+    /// 外部 API は利用者が送信を許可したときだけ (Summarizer が経路を決める)。端末内モデルは電力を使うため、充電中か、アプリを開いているあいだ (残量 20% 以上) だけ。
     /// 画面を閉じても続く継続タスクの中では行わない (進捗を送れず、OS に止められるのを避ける)。
     private func summarizeBacklog() async {
         guard progressSink == nil else { return }
@@ -574,9 +591,10 @@ final class Pipeline: NSObject, ObservableObject {
         }
     }
 
-    /// 端末内モデルは充電中だけ。外部 API は端末の負荷が小さいので電源を問わない (送信の許可は経路の判定で確認済み)。
+    /// 端末内モデルは充電中か、アプリを開いているあいだ (残量 20% 以上・低電力モードでない) だけ。外部 API は端末の負荷が小さいので電源を問わない (送信の許可は経路の判定で確認済み)。
     private func autoSummaryPowerOK(_ route: SummaryRoute) -> Bool {
         route == .remote || PowerPolicy.shouldProofread(charge: currentCharge(), isSimulator: isSimulator)
+            || (foregroundRun && canTranscribeNow(userInitiated: true))
     }
 }
 

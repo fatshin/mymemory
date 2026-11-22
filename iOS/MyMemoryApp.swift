@@ -25,7 +25,10 @@ struct MyMemoryApp: App {
                 .tint(Theme.accent)
         }
         .modelContainer(container)
-        // 背景で文字起こしだけ済んだ録音は、前面に戻ったときに自動要約する (文字起こし中は drain の後に始まる)
-        .onChange(of: scenePhase) { _, p in if p == .active { pipeline.startSummaryBacklog() } }
+        // アプリを開いたら (起動時も含む)、保留の文字起こしと要約を自動で進める。背景に回ったら充電中だけに戻す
+        // 通知センターの出し入れ (inactive) では切り替えない
+        .onChange(of: scenePhase, initial: true) { _, p in
+            if p == .active { pipeline.setForeground(true) } else if p == .background { pipeline.setForeground(false) }
+        }
     }
 }
