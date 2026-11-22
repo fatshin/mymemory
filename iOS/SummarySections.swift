@@ -23,24 +23,81 @@ enum SummarySections {
 
     static func parse(_ text: String) -> Items {
         var items = Items()
+        for f in scan(lines(of: text)) {
+            switch f.section {
+            case .decisions: items.decisions.append(f.text)
+            case .todos: items.todos.append(f.text)
+            case .other: break
+            }
+        }
+        return items
+    }
+
+    // MARK: - 編集
+
+    /// index 番目の TODO を newText に置き換える (nil なら削除)。index は parse(text).todos の並び。
+    /// 節の TODO が無くなったら「- なし」を残し、見出しだけの節にしない。範囲外なら元の文を返す。
+    /// expected を渡すと、index の項目の文言が一致するときだけ書き換える (一致しなければ同じ文言の最初の項目を探す)。
+    /// 画面の表示が古いまま操作されても、別の項目を消さないため。
+    static func editingTodo(in text: String, at index: Int, expected: String? = nil, to newText: String?) -> String {
+        var ls = lines(of: text)
+        let todos = scan(ls).filter { $0.section == .todos }
+        let resolved: Int?
+        if let expected {
+            resolved = todos.indices.contains(index) && todos[index].text == expected
+                ? index : todos.firstIndex { $0.text == expected }
+        } else {
+            resolved = todos.indices.contains(index) ? index : nil
+        }
+        guard let resolved else { return text }
+        let target = todos[resolved]
+        let replacement = newText?.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
+        var newLines: [String]
+        if let replacement, !replacement.isEmpty {
+            // 見出しと同じ行にあった項目は、見出しを残して項目だけ差し替える
+            newLines = [(target.headingPrefix.map { $0 + "\n" } ?? "") + "- " + replacement]
+        } else {
+            let sectionEmpty = todos.filter { $0.sectionStart == target.sectionStart }.count == 1
+            newLines = [target.headingPrefix, sectionEmpty ? "- なし" : nil].compactMap { $0 }
+        }
+        newLines = newLines.flatMap { $0.components(separatedBy: "\n") }
+        ls.replaceSubrange(target.lines, with: newLines)
+        return ls.joined(separator: "\n")
+    }
+
+    // MARK: - 走査
+
+    private struct Found {
+        let section: Section
+        var text: String
+        /// 項目が占める行 (折り返しを含む)。
+        var lines: ClosedRange<Int>
+        /// 見出しと同じ行にあった項目なら、その見出し部分。
+        let headingPrefix: String?
+        /// 項目が属する節の見出しの行。
+        let sectionStart: Int
+    }
+
+    private static func lines(of text: String) -> [String] {
+        text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: .newlines)
+    }
+
+    private static func scan(_ lines: [String]) -> [Found] {
+        var found: [Found] = []
         var section: Section?
+        var sectionStart = -1
         var lastWasItem = false
         var itemsInSection = 0
 
-        func add(_ raw: String) {
+        func add(_ raw: String, at i: Int, headingPrefix: String? = nil) {
             let t = cleanItem(raw)
-            guard !t.isEmpty, !isNone(t) else { return }
-            switch section {
-            case .decisions: items.decisions.append(t)
-            case .todos: items.todos.append(t)
-            default: return
-            }
+            guard !t.isEmpty, !isNone(t), let section, section != .other else { return }
+            found.append(Found(section: section, text: t, lines: i...i, headingPrefix: headingPrefix, sectionStart: sectionStart))
             lastWasItem = true
             itemsInSection += 1
         }
 
-        let unified = text.replacingOccurrences(of: "\r\n", with: "\n")
-        for rawLine in unified.components(separatedBy: .newlines) {
+        for (i, rawLine) in lines.enumerated() {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             if line.isEmpty { lastWasItem = false; continue }
             // 末尾の「(端末内で要約)」などの注記は項目ではない
@@ -50,23 +107,34 @@ enum SummarySections {
 
             if let h = heading(line) {
                 section = h.0
+                sectionStart = i
                 lastWasItem = false
                 itemsInSection = 0
-                if !h.1.isEmpty { add(stripBullet(h.1) ?? h.1) }
+                if !h.1.isEmpty {
+                    // 見出しは正規化した文字で判定するため、原文と一致しないときは標準の見出しに置き換える (見出しを消さない)
+                    let prefix = line.hasSuffix(h.1)
+                        ? String(line.dropLast(h.1.count)).trimmingCharacters(in: .whitespaces)
+                        : (h.0 == .todos ? "【TODO】" : h.0 == .decisions ? "【決定事項】" : nil)
+                    add(stripBullet(h.1) ?? h.1, at: i, headingPrefix: prefix)
+                }
                 continue
             }
             guard section == .decisions || section == .todos else { continue }
             if let body = stripBullet(line) {
-                add(body)
-            } else if lastWasItem, rawLine.first?.isWhitespace == true {
+                add(body, at: i)
+            } else if lastWasItem, rawLine.first?.isWhitespace == true, let last = found.indices.last {
                 // 字下げされた行は直前の項目の折り返しとしてつなげる
-                appendToLast(cleanItem(line), in: section, items: &items)
+                let s = cleanItem(line)
+                if !s.isEmpty {
+                    found[last].text += " " + s
+                    found[last].lines = found[last].lines.lowerBound...i
+                }
             } else if itemsInSection == 0 {
                 // 記号のない項目は節の最初だけ拾う (末尾の締めの文を TODO に混ぜない)
-                add(line)
+                add(line, at: i)
             }
         }
-        return items
+        return found
     }
 
     // MARK: - 見出し
@@ -142,14 +210,5 @@ enum SummarySections {
         for ch in ["。", "、", ".", "(", ")", "（", "）", " ", "　"] { t = t.replacingOccurrences(of: ch, with: "") }
         for w in ["特に", "決定事項", "TODO", "ToDo", "todo"] { t = t.replacingOccurrences(of: w, with: "") }
         return t.isEmpty || t == "なし" || t == "該当なし" || t == "はなし"
-    }
-
-    private static func appendToLast(_ s: String, in section: Section?, items: inout Items) {
-        guard !s.isEmpty else { return }
-        switch section {
-        case .decisions where !items.decisions.isEmpty: items.decisions[items.decisions.count - 1] += " " + s
-        case .todos where !items.todos.isEmpty: items.todos[items.todos.count - 1] += " " + s
-        default: break
-        }
     }
 }

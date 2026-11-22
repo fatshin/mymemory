@@ -8,6 +8,10 @@ struct ActionItemsView: View {
 
     @Query private var recordings: [Recording]
     @State private var groups: [DayGroup] = []
+    @Environment(\.modelContext) private var ctx
+    @State private var editing: TodoSource?
+    @State private var editText = ""
+    @State private var editError: String?
     @State private var loaded = false
 
     struct Entry: Identifiable {
@@ -39,7 +43,11 @@ struct ActionItemsView: View {
             ForEach(groups) { group in
                 Section {
                     ForEach(group.entries) { entry in
-                        NavigationLink(value: entry.id) { EntryRow(entry: entry) }
+                        NavigationLink(value: entry.id) {
+                            EntryRow(entry: entry,
+                                     onEdit: { i, text in editText = text; editing = .recording(entry.id, index: i, expected: text) },
+                                     onRemove: { i, text in apply(.recording(entry.id, index: i, expected: text), text: nil) })
+                        }
                     }
                 } header: {
                     Text(group.day, format: .dateTime.year().month().day().weekday())
@@ -53,11 +61,26 @@ struct ActionItemsView: View {
             }
         }
         .navigationTitle("決定事項・TODO")
+        .alert("やることを編集", isPresented: Binding(get: { editing != nil }, set: { if !$0 { editing = nil } })) {
+            TextField("やること", text: $editText, axis: .vertical)
+            Button("保存") { if let e = editing { apply(e, text: editText) }; editing = nil }
+            Button("キャンセル", role: .cancel) { editing = nil }
+        } message: {
+            Text("空にして保存すると削除します")
+        }
+        .alert("やることを保存できませんでした", isPresented: Binding(get: { editError != nil }, set: { if !$0 { editError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(editError ?? "") }
         // 解析は表示時と要約の増減時だけ行い、再描画のたびには行わない
         .task(id: changeKey) {
             groups = Self.group(recordings)
             loaded = true
         }
+    }
+
+    /// 元の要約の文を書き換える。一覧は要約の変化 (changeKey) で組み直される。
+    private func apply(_ source: TodoSource, text: String?) {
+        do { try TodoEditor.apply(source, newText: text, in: ctx) } catch { editError = error.localizedDescription }
     }
 
     /// 要約の追加・作り直しで変わる軽い値 (解析をやり直す合図)。
@@ -80,6 +103,8 @@ struct ActionItemsView: View {
 
 private struct EntryRow: View {
     let entry: ActionItemsView.Entry
+    var onEdit: (Int, String) -> Void = { _, _ in }
+    var onRemove: (Int, String) -> Void = { _, _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -87,8 +112,14 @@ private struct EntryRow: View {
             ForEach(Array(entry.items.decisions.enumerated()), id: \.offset) { _, d in
                 Label(d, systemImage: "checkmark.seal").font(.subheadline)
             }
-            ForEach(Array(entry.items.todos.enumerated()), id: \.offset) { _, t in
+            ForEach(Array(entry.items.todos.enumerated()), id: \.offset) { i, t in
                 Label(t, systemImage: "circle").font(.subheadline)
+                    // 長押しで完了・編集・削除 (行を押すと録音の詳細へ移る)
+                    .contextMenu {
+                        Button { onRemove(i, t) } label: { Label("完了", systemImage: "checkmark.circle") }
+                        Button { onEdit(i, t) } label: { Label("編集", systemImage: "pencil") }
+                        Button(role: .destructive) { onRemove(i, t) } label: { Label("削除", systemImage: "trash") }
+                    }
             }
         }
         .padding(.vertical, 2)

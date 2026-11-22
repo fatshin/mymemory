@@ -14,6 +14,8 @@ struct HomeSummary {
         let recordingID: UUID?
         let time: Date?
         let text: String
+        /// 編集・削除で書き換える元。
+        let source: TodoSource
         /// どの会話から出たやることか (元の要約の概要の 1 文目)。
         var context: String? = nil
     }
@@ -62,7 +64,10 @@ struct HomeSummary {
         if let saved {
             // 振り返りの TODO は、優先順・重複除去・済んだものの除外を済ませてある
             let parsed = SummarySections.parse(saved.text)
-            todos = parsed.todos.enumerated().map { Todo(id: "r-\($0.offset)", recordingID: nil, time: nil, text: $0.element) }
+            todos = parsed.todos.enumerated().map {
+                Todo(id: "r-\($0.offset)-\($0.element)", recordingID: nil, time: nil, text: $0.element,
+                     source: .reflection(day: day, index: $0.offset, expected: $0.element))
+            }
             decisions = parsed.decisions
         } else {
             let cutoff = calendar.date(byAdding: .day, value: -todoDays, to: today) ?? .distantPast
@@ -72,7 +77,8 @@ struct HomeSummary {
                 let parsed = SummarySections.parse(s)
                 let context = ReflectionSections.overviewSentence(in: s)
                 for (i, t) in parsed.todos.enumerated() where seen.insert(t).inserted {
-                    todos.append(Todo(id: "\(rec.id)-\(i)", recordingID: rec.id, time: rec.startedAt, text: t, context: context))
+                    todos.append(Todo(id: "\(rec.id)-\(i)-\(t)", recordingID: rec.id, time: rec.startedAt, text: t,
+                                      source: .recording(rec.id, index: i, expected: t), context: context))
                 }
             }
             // 決定事項は表示する日のもの (7日より前の日を表示していても拾う)

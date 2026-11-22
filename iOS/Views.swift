@@ -11,6 +11,25 @@ struct RootView: View {
     @State private var home: HomeSummary?
     /// 保存済みの振り返りを読み直す合図 (生成・日付の変わり目・設定を閉じたとき)。
     @State private var refreshTick = 0
+    @Environment(\.modelContext) private var ctx
+    @State private var editingTodo: HomeSummary.Todo?
+    @State private var editText = ""
+    @State private var todoError: String?
+
+    private func startEditing(_ t: HomeSummary.Todo) {
+        editText = t.text
+        editingTodo = t
+    }
+
+    private func complete(_ t: HomeSummary.Todo) {
+        withAnimation { applyTodo(t, text: nil) }
+    }
+
+    /// 元の要約か振り返りの文を書き換え、最初の表示を組み立て直す。
+    private func applyTodo(_ t: HomeSummary.Todo, text: String?) {
+        do { try TodoEditor.apply(t.source, newText: text, in: ctx) } catch { todoError = error.localizedDescription }
+        refreshTick += 1
+    }
 
     private var days: [(day: Date, items: [Recording])] {
         // 文字起こしと要約の両方を検索する
@@ -65,10 +84,25 @@ struct RootView: View {
                                 .font(.callout).foregroundStyle(.secondary)
                         }
                         ForEach(home.todos) { t in
-                            if let id = t.recordingID {
-                                NavigationLink(value: id) { TodoRow(todo: t) }
-                            } else {
-                                TodoRow(todo: t)
+                            Group {
+                                if let id = t.recordingID {
+                                    NavigationLink(value: id) { TodoRow(todo: t) { complete(t) } }
+                                } else {
+                                    TodoRow(todo: t) { complete(t) }
+                                }
+                            }
+                            // 左へスワイプで削除・編集、右へスワイプで完了 (完了は一覧から外す)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button(role: .destructive) { applyTodo(t, text: nil) } label: { Label("削除", systemImage: "trash") }
+                                Button { startEditing(t) } label: { Label("編集", systemImage: "pencil") }.tint(.blue)
+                            }
+                            .swipeActions(edge: .leading) {
+                                Button { complete(t) } label: { Label("完了", systemImage: "checkmark") }.tint(.green)
+                            }
+                            .contextMenu {
+                                Button { complete(t) } label: { Label("完了", systemImage: "checkmark.circle") }
+                                Button { startEditing(t) } label: { Label("編集", systemImage: "pencil") }
+                                Button(role: .destructive) { applyTodo(t, text: nil) } label: { Label("削除", systemImage: "trash") }
                             }
                         }
                         if home.todoOverflow > 0 {
@@ -150,16 +184,33 @@ struct RootView: View {
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .fullScreenCover(isPresented: .constant(!onboardingDone)) { OnboardingView() }
+            .alert("やることを編集", isPresented: Binding(get: { editingTodo != nil }, set: { if !$0 { editingTodo = nil } })) {
+                TextField("やること", text: $editText, axis: .vertical)
+                Button("保存") { if let t = editingTodo { applyTodo(t, text: editText) }; editingTodo = nil }
+                Button("キャンセル", role: .cancel) { editingTodo = nil }
+            } message: {
+                Text("空にして保存すると削除します")
+            }
+            .alert("やることを保存できませんでした", isPresented: Binding(get: { todoError != nil }, set: { if !$0 { todoError = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: { Text(todoError ?? "") }
         }
     }
 }
 
 private struct TodoRow: View {
     let todo: HomeSummary.Todo
+    var onComplete: () -> Void = {}
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Image(systemName: "circle").font(.caption).foregroundStyle(Theme.accentText)
+            // 丸を押すと完了 (一覧から外す)
+            Button(action: onComplete) {
+                Image(systemName: "circle").font(.body).foregroundStyle(Theme.accentText)
+                    .frame(width: 32, height: 32).contentShape(.rect)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("完了にする")
             VStack(alignment: .leading, spacing: 2) {
                 Text(todo.text).font(.callout)
                 // どの会話から出たかを添える (やることの文だけでは用件が分からないことがあるため)

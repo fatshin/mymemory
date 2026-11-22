@@ -174,3 +174,63 @@ final class SummarySectionsTests: XCTestCase {
         XCTAssertEqual(r.todos, ["田中: B社に申し込む (金曜)"])
     }
 }
+
+/// TODO の編集・削除。保存された要約の文を書き換えるので、他の節や注記を壊さないことを確かめる。
+final class SummaryTodoEditTests: XCTestCase {
+    private let base = """
+    【概要】
+    田中さんと見積もりの件を話した。
+    【決定事項】
+    - B社に決めた
+    【TODO】
+    - 田中さん: B社向けの見積書を送る (金曜)
+    - 自分: 会議室を予約する
+
+    (OpenAI で要約)
+    """
+
+    func testEditReplacesOnlyThatItem() {
+        let out = SummarySections.editingTodo(in: base, at: 1, to: "自分: 来週の会議室を予約する")
+        XCTAssertEqual(SummarySections.parse(out).todos, ["田中さん: B社向けの見積書を送る (金曜)", "自分: 来週の会議室を予約する"])
+        XCTAssertEqual(SummarySections.parse(out).decisions, ["B社に決めた"])
+        XCTAssertTrue(out.hasSuffix("(OpenAI で要約)"))
+    }
+
+    func testDeleteKeepsOthersAndLeavesNoneWhenEmpty() {
+        let one = SummarySections.editingTodo(in: base, at: 0, to: nil)
+        XCTAssertEqual(SummarySections.parse(one).todos, ["自分: 会議室を予約する"])
+        let none = SummarySections.editingTodo(in: one, at: 0, to: nil)
+        XCTAssertEqual(SummarySections.parse(none).todos, [])
+        XCTAssertTrue(none.contains("【TODO】\n- なし"))
+    }
+
+    /// 字下げで折り返された項目は、折り返しの行ごと置き換える。
+    func testEditWrappedItem() {
+        let s = "【TODO】\n- 見積書を\n  送る\n- 予約する"
+        let out = SummarySections.editingTodo(in: s, at: 0, to: "見積書をメールで送る")
+        XCTAssertEqual(SummarySections.parse(out).todos, ["見積書をメールで送る", "予約する"])
+    }
+
+    /// 空の文に編集したら削除と同じに扱う。範囲外の番号は何も変えない。
+    func testBlankEditDeletesAndOutOfRangeIsNoop() {
+        XCTAssertEqual(SummarySections.parse(SummarySections.editingTodo(in: base, at: 1, to: "  ")).todos.count, 1)
+        XCTAssertEqual(SummarySections.editingTodo(in: base, at: 9, to: "x"), base)
+    }
+}
+
+final class SummaryTodoEditSafetyTests: XCTestCase {
+    /// 表示が古く番号がずれていても、文言で正しい項目を探して書き換える。見つからなければ何もしない。
+    func testExpectedTextGuardsAgainstStaleIndex() {
+        let s = "【TODO】\n- A を送る\n- B を予約する"
+        XCTAssertEqual(SummarySections.parse(SummarySections.editingTodo(in: s, at: 0, expected: "B を予約する", to: nil)).todos, ["A を送る"])
+        XCTAssertEqual(SummarySections.editingTodo(in: s, at: 0, expected: "C を買う", to: nil), s)
+    }
+
+    /// 全角や太字を含む見出し行の項目を削除しても、見出しを消さない (後ろの項目が別の節に移らない)。
+    func testInlineHeadingWithFullwidthKeepsHeading() {
+        let s = "【決定事項】\n- B社に決めた\n**TODO:** **Ａ社**に送る\n- 予約する"
+        let out = SummarySections.editingTodo(in: s, at: 0, to: nil)
+        XCTAssertEqual(SummarySections.parse(out).todos, ["予約する"])
+        XCTAssertEqual(SummarySections.parse(out).decisions, ["B社に決めた"])
+    }
+}
