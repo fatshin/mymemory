@@ -10,12 +10,13 @@ struct HomeSummary {
     }
 
     struct Todo: Identifiable {
-        let id: String
-        let recordingID: UUID?
-        let time: Date?
+        var id: String { TodoLedger.key(original) }
+        let recordingID: UUID
+        let time: Date
+        /// 表示する文言 (台帳で編集していれば編集後)。
         let text: String
-        /// 編集・削除で書き換える元。
-        let source: TodoSource
+        /// 要約に書かれていた元の文言 (台帳の鍵)。
+        let original: String
         /// どの会話から出たやることか (元の要約の概要の 1 文目)。
         var context: String? = nil
     }
@@ -36,7 +37,25 @@ struct HomeSummary {
     let todoOverflow: Int
     let decisions: [String]
 
-    static func build(recordings: [Recording], now: Date = Date(), calendar: Calendar = .current) -> HomeSummary? {
+    /// 録音ごとの要約から未完了のやることを集める (recordings の並び順)。台帳を重ね、同じ文言は 1 件にまとめる。
+    /// やることの出どころは録音の要約に一本化する (振り返りは言い回しを変えるため、文言で状態を照合できない)。
+    static func openTodos(from recordings: [Recording], ledger: TodoLedger) -> [Todo] {
+        var seen = Set<String>()
+        var todos: [Todo] = []
+        for rec in recordings {
+            guard let s = rec.summary else { continue }
+            let context = ReflectionSections.overviewSentence(in: s)
+            for t in SummarySections.parse(s).todos {
+                // 未完了のものだけで重複をまとめる (新しい録音が完了でも、別に効く古い未完了は出す)
+                guard case .open(let display) = ledger.resolve(t, startedAt: rec.startedAt),
+                      seen.insert(TodoLedger.key(t)).inserted else { continue }
+                todos.append(Todo(recordingID: rec.id, time: rec.startedAt, text: display, original: t, context: context))
+            }
+        }
+        return todos
+    }
+
+    static func build(recordings: [Recording], ledger: TodoLedger, now: Date = Date(), calendar: Calendar = .current) -> HomeSummary? {
         // recordings は新しい順。今日が無ければ、録音のある直近の日を出す
         guard let latest = recordings.first else { return nil }
         let today = calendar.startOfDay(for: now)
@@ -59,31 +78,11 @@ struct HomeSummary {
             return Point(id: r.id, time: r.startedAt, text: String(t.prefix(60)))
         }
 
-        var todos: [Todo] = []
-        var decisions: [String] = []
-        if let saved {
-            // 振り返りの TODO は、優先順・重複除去・済んだものの除外を済ませてある
-            let parsed = SummarySections.parse(saved.text)
-            todos = parsed.todos.enumerated().map {
-                Todo(id: "r-\($0.offset)-\($0.element)", recordingID: nil, time: nil, text: $0.element,
-                     source: .reflection(day: day, index: $0.offset, expected: $0.element))
-            }
-            decisions = parsed.decisions
-        } else {
-            let cutoff = calendar.date(byAdding: .day, value: -todoDays, to: today) ?? .distantPast
-            var seen = Set<String>()
-            for rec in recordings where rec.startedAt >= cutoff {
-                guard let s = rec.summary else { continue }
-                let parsed = SummarySections.parse(s)
-                let context = ReflectionSections.overviewSentence(in: s)
-                for (i, t) in parsed.todos.enumerated() where seen.insert(t).inserted {
-                    todos.append(Todo(id: "\(rec.id)-\(i)-\(t)", recordingID: rec.id, time: rec.startedAt, text: t,
-                                      source: .recording(rec.id, index: i, expected: t), context: context))
-                }
-            }
-            // 決定事項は表示する日のもの (7日より前の日を表示していても拾う)
-            for rec in items { if let s = rec.summary { decisions += SummarySections.parse(s).decisions } }
-        }
+        let cutoff = calendar.date(byAdding: .day, value: -todoDays, to: today) ?? .distantPast
+        let todos = openTodos(from: recordings.filter { $0.startedAt >= cutoff }, ledger: ledger)
+        // 決定事項は表示する日のもの。振り返りがあればそれを使う (7日より前の日を表示していても拾う)
+        let decisions = saved.map { SummarySections.parse($0.text).decisions }
+            ?? items.flatMap { $0.summary.map { SummarySections.parse($0).decisions } ?? [] }
 
         return HomeSummary(day: day, dayLabel: label, items: items,
                            totalMinutes: Int(items.reduce(0) { $0 + $1.duration } / 60),

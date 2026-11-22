@@ -11,24 +11,25 @@ struct RootView: View {
     @State private var home: HomeSummary?
     /// 保存済みの振り返りを読み直す合図 (生成・日付の変わり目・設定を閉じたとき)。
     @State private var refreshTick = 0
-    @Environment(\.modelContext) private var ctx
+    @ObservedObject private var ledgerStore = TodoLedgerStore.shared
     @State private var editingTodo: HomeSummary.Todo?
     @State private var editText = ""
-    @State private var todoError: String?
+    @State private var undo: TodoUndo?
 
     private func startEditing(_ t: HomeSummary.Todo) {
         editText = t.text
         editingTodo = t
     }
 
+    /// 完了・削除は台帳に記録し、数秒「元に戻す」を出す。要約の本文は書き換えない。
     private func complete(_ t: HomeSummary.Todo) {
-        withAnimation { applyTodo(t, text: nil) }
+        let previous = withAnimation { ledgerStore.perform(t.original) { $0.complete(t.original, startedAt: t.time) } }
+        undo = TodoUndo(original: t.original, previous: previous, message: "完了しました")
     }
 
-    /// 元の要約か振り返りの文を書き換え、最初の表示を組み立て直す。
-    private func applyTodo(_ t: HomeSummary.Todo, text: String?) {
-        do { try TodoEditor.apply(t.source, newText: text, in: ctx) } catch { todoError = error.localizedDescription }
-        refreshTick += 1
+    private func remove(_ t: HomeSummary.Todo) {
+        let previous = withAnimation { ledgerStore.perform(t.original) { $0.delete(t.original, startedAt: t.time) } }
+        undo = TodoUndo(original: t.original, previous: previous, message: "削除しました")
     }
 
     private var days: [(day: Date, items: [Recording])] {
@@ -51,6 +52,7 @@ struct RootView: View {
     private var homeKey: Int {
         var h = Hasher()
         h.combine(refreshTick)
+        h.combine(ledgerStore.revision)
         h.combine(Calendar.current.startOfDay(for: Date()))
         for rec in recordings.prefix(200) {
             // 本文全体ではなく長さで変化を見る (再描画のたびに全文をハッシュしない)
@@ -84,16 +86,10 @@ struct RootView: View {
                                 .font(.callout).foregroundStyle(.secondary)
                         }
                         ForEach(home.todos) { t in
-                            Group {
-                                if let id = t.recordingID {
-                                    NavigationLink(value: id) { TodoRow(todo: t) { complete(t) } }
-                                } else {
-                                    TodoRow(todo: t) { complete(t) }
-                                }
-                            }
+                            NavigationLink(value: t.recordingID) { TodoRow(todo: t) { complete(t) } }
                             // 左へスワイプで削除・編集、右へスワイプで完了 (完了は一覧から外す)
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                Button(role: .destructive) { applyTodo(t, text: nil) } label: { Label("削除", systemImage: "trash") }
+                                Button(role: .destructive) { remove(t) } label: { Label("削除", systemImage: "trash") }
                                 Button { startEditing(t) } label: { Label("編集", systemImage: "pencil") }.tint(.blue)
                             }
                             .swipeActions(edge: .leading) {
@@ -102,7 +98,7 @@ struct RootView: View {
                             .contextMenu {
                                 Button { complete(t) } label: { Label("完了", systemImage: "checkmark.circle") }
                                 Button { startEditing(t) } label: { Label("編集", systemImage: "pencil") }
-                                Button(role: .destructive) { applyTodo(t, text: nil) } label: { Label("削除", systemImage: "trash") }
+                                Button(role: .destructive) { remove(t) } label: { Label("削除", systemImage: "trash") }
                             }
                         }
                         if home.todoOverflow > 0 {
@@ -154,7 +150,7 @@ struct RootView: View {
             }
             // 解析は録音や要約が変わったときだけ行い、処理状況の更新による再描画のたびには行わない
             .task(id: homeKey) {
-                home = HomeSummary.build(recordings: recordings)
+                home = HomeSummary.build(recordings: recordings, ledger: ledgerStore.ledger)
                 // 読み込み前や障害で一覧が空のときに全日を消さないよう、録音があるときだけ掃除する
                 if !recordings.isEmpty {
                     ReflectionStore.purge(keepingDays: Array(Set(recordings.map { Calendar.current.startOfDay(for: $0.startedAt) })))
@@ -186,14 +182,18 @@ struct RootView: View {
             .fullScreenCover(isPresented: .constant(!onboardingDone)) { OnboardingView() }
             .alert("やることを編集", isPresented: Binding(get: { editingTodo != nil }, set: { if !$0 { editingTodo = nil } })) {
                 TextField("やること", text: $editText, axis: .vertical)
-                Button("保存") { if let t = editingTodo { applyTodo(t, text: editText) }; editingTodo = nil }
+                Button("保存") {
+                    if let t = editingTodo {
+                        ledgerStore.perform(t.original) { $0.edit(t.original, startedAt: t.time, to: editText) }
+                        undo = nil  // 編集の後に古い「元に戻す」を押して編集まで消さない
+                    }
+                    editingTodo = nil
+                }
                 Button("キャンセル", role: .cancel) { editingTodo = nil }
             } message: {
                 Text("空にして保存すると削除します")
             }
-            .alert("やることを保存できませんでした", isPresented: Binding(get: { todoError != nil }, set: { if !$0 { todoError = nil } })) {
-                Button("OK", role: .cancel) {}
-            } message: { Text(todoError ?? "") }
+            .overlay(alignment: .bottom) { UndoBanner(undo: $undo) }
         }
     }
 }
@@ -214,13 +214,11 @@ private struct TodoRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(todo.text).font(.callout)
                 // どの会話から出たかを添える (やることの文だけでは用件が分からないことがあるため)
-                if todo.time != nil || todo.context != nil {
-                    HStack(spacing: 4) {
-                        if let time = todo.time { Text(time, format: .dateTime.month().day().hour().minute()) }
-                        if let context = todo.context { Text(context).lineLimit(1) }
-                    }
-                    .font(.caption2).foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Text(todo.time, format: .dateTime.month().day().hour().minute())
+                    if let context = todo.context { Text(context).lineLimit(1) }
                 }
+                .font(.caption2).foregroundStyle(.secondary)
             }
         }
     }
@@ -273,6 +271,8 @@ private struct Row: View {
 
 struct DetailView: View {
     @EnvironmentObject var pipeline: Pipeline
+    /// 台帳が変わったら要約の表示 (やることの完了・削除・編集) を更新する。
+    @ObservedObject private var ledgerStore = TodoLedgerStore.shared
     @Environment(\.modelContext) private var ctx
     let rec: Recording
     @State private var summarizing = false
@@ -285,7 +285,12 @@ struct DetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                if let s = rec.summary { Section("要約") { Text(s).textSelection(.enabled) } }
+                // やることには台帳 (完了・削除・編集) を重ねて見せる。保存している要約の本文はそのまま
+                if let s = rec.summary {
+                    Section("要約") {
+                        Text(ledgerStore.ledger.overlay(summary: s, startedAt: rec.startedAt)).textSelection(.enabled)
+                    }
+                }
                 if let t = rec.transcript {
                     Section {
                         Text(t).textSelection(.enabled)
@@ -381,8 +386,11 @@ extension Recording {
     /// 削除済み、または保存先から外れた録音ではない。
     var isAlive: Bool { !isDeleted && modelContext != nil }
 
-    var exportEntry: ExportEntry {
-        ExportEntry(startedAt: startedAt, duration: duration, summary: summary, transcript: transcript)
+    /// 書き出しには、やること台帳を重ねた要約を使う (完了は [x]、削除は出さない、編集後の文言)。
+    @MainActor var exportEntry: ExportEntry {
+        ExportEntry(startedAt: startedAt, duration: duration,
+                    summary: summary.map { TodoLedgerStore.shared.ledger.overlay(summary: $0, startedAt: startedAt) },
+                    transcript: transcript)
     }
 }
 
@@ -538,6 +546,14 @@ struct DayReflectionView: View {
     @State private var shownRoute: SummaryRoute?
     @State private var error: String?
     @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject private var ledgerStore = TodoLedgerStore.shared
+
+    /// 振り返りの【TODO】は言い回しが変わり台帳と照合できないため、その日の録音のやること (台帳適用後) に差し替える。
+    private func dayReflectionText(_ text: String) -> String {
+        let todos = HomeSummary.openTodos(from: items, ledger: ledgerStore.ledger)
+        let body = todos.isEmpty ? "- なし" : todos.map { "- " + $0.text }.joined(separator: "\n")
+        return ReflectionSections.replacingSection("TODO", in: text, with: body)
+    }
 
     private var timeline: String {
         items.compactMap { r in
@@ -550,7 +566,7 @@ struct DayReflectionView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 if let progress, loading { Text(progress).font(.caption).foregroundStyle(.secondary) }
-                if let text { ReflectionCards(text: text) }
+                if let text { ReflectionCards(text: dayReflectionText(text)) }
                 if let error { Text(error).foregroundStyle(.red) }
                 VStack(alignment: .leading, spacing: 8) {
                     Label("タイムライン", systemImage: "list.bullet.rectangle").font(.headline)
@@ -563,7 +579,7 @@ struct DayReflectionView: View {
         .navigationTitle(day.formatted(date: .abbreviated, time: .omitted))
         .toolbar {
             ShareLink(item: MarkdownFile(name: ExportFormatter.fileName(for: day),
-                                         text: ExportFormatter.day(day, entries: items.map(\.exportEntry), reflection: text)),
+                                         text: ExportFormatter.day(day, entries: items.map(\.exportEntry), reflection: text.map(dayReflectionText))),
                       preview: SharePreview(ExportFormatter.fileName(for: day))) {
                 Image(systemName: "square.and.arrow.up")
             }

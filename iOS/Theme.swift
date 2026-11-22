@@ -170,3 +170,32 @@ struct ReflectionCards: View {
         .textSelection(.enabled)
     }
 }
+
+/// 完了・削除の直後に数秒出す「元に戻す」。
+struct UndoBanner: View {
+    @Binding var undo: TodoUndo?
+    @ObservedObject private var store = TodoLedgerStore.shared
+
+    var body: some View {
+        if let u = undo {
+            HStack {
+                Text(u.message).font(.subheadline)
+                Spacer()
+                Button("元に戻す") {
+                    withAnimation { store.undo(u.original, previous: u.previous, after: u.after) }
+                    undo = nil
+                }
+                .font(.subheadline.bold())
+            }
+            .padding(.horizontal, 16).padding(.vertical, 12)
+            .background(.regularMaterial, in: .capsule)
+            .padding(.horizontal, 16).padding(.bottom, 8)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            // 操作が続いたら新しい記録に置き換わる。4 秒たって同じ記録のままなら消す
+            .task(id: u) {
+                try? await Task.sleep(for: .seconds(4))
+                if undo == u { withAnimation { undo = nil } }
+            }
+        }
+    }
+}

@@ -117,3 +117,15 @@ final class OverviewContextTests: XCTestCase {
         XCTAssertNil(ReflectionSections.overviewSentence(in: "【要点】\n- A"))
     }
 }
+
+final class ReplacingSectionTests: XCTestCase {
+    /// 振り返りの【TODO】だけを差し替え、他の節と注記は残す。
+    func testReplaceTodoSection() {
+        let s = "【1日の流れ】\n- 朝\n【TODO】\n- 古い\n- 古い2\n\n【気づき】\n- 傾向\n\n(端末内で要約)"
+        let out = ReflectionSections.replacingSection("TODO", in: s, with: "- 新しい")
+        XCTAssertEqual(ReflectionSections.parse(out).map(\.title), ["1日の流れ", "TODO", "気づき"])
+        XCTAssertEqual(ReflectionSections.parse(out)[1].body, "- 新しい")
+        XCTAssertEqual(ReflectionSections.routeLabel(in: out), "(端末内で要約)")
+        XCTAssertEqual(ReflectionSections.replacingSection("TODO", in: "【要点】\n- A", with: "- x"), "【要点】\n- A")
+    }
+}

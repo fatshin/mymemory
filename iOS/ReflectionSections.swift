@@ -97,6 +97,27 @@ extension ReflectionSections {
         return first.count > 40 ? String(first.prefix(40)) + "…" : first + "。"
     }
 
+    /// 【title】節の本文を body に置き換えた文。節が無ければ元の文を返す。注記や他の節は変えない。
+    static func replacingSection(_ title: String, in text: String, with body: String) -> String {
+        let lines = text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        // 見出しは大文字小文字と「TODO・約束」のような付記の揺れを許す
+        let want = title.lowercased()
+        guard let start = lines.firstIndex(where: {
+            heading($0.trimmingCharacters(in: .whitespaces))?.title.lowercased().hasPrefix(want) == true
+        }) else { return text }
+        var end = start + 1
+        while end < lines.count {
+            let l = lines[end].trimmingCharacters(in: .whitespaces)
+            if heading(l) != nil || isRouteLabel(l) { break }
+            end += 1
+        }
+        // 次の節や注記の前の空行は残す
+        while end > start + 1, lines[end - 1].trimmingCharacters(in: .whitespaces).isEmpty { end -= 1 }
+        var out = lines
+        out.replaceSubrange(start..<end, with: ["【\(title)】"] + body.components(separatedBy: "\n"))
+        return out.joined(separator: "\n")
+    }
+
     /// 末尾の「(OpenAI で要約)」などの注記。どこで処理したかの開示として、本文とは別に表示する。
     static func routeLabel(in text: String) -> String? {
         guard let last = text.components(separatedBy: "\n").last(where: {

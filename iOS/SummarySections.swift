@@ -33,35 +33,30 @@ enum SummarySections {
         return items
     }
 
-    // MARK: - 編集
+    // MARK: - 重ね合わせ
 
-    /// index 番目の TODO を newText に置き換える (nil なら削除)。index は parse(text).todos の並び。
-    /// 節の TODO が無くなったら「- なし」を残し、見出しだけの節にしない。範囲外なら元の文を返す。
-    /// expected を渡すと、index の項目の文言が一致するときだけ書き換える (一致しなければ同じ文言の最初の項目を探す)。
-    /// 画面の表示が古いまま操作されても、別の項目を消さないため。
-    static func editingTodo(in text: String, at index: Int, expected: String? = nil, to newText: String?) -> String {
+    /// TODO の各項目を transform で置き換えた文を返す (nil を返した項目は消す)。他の節・注記・行は変えない。
+    /// 節の TODO がすべて消えたら「- なし」を残す。要約の本文 (正本) は書き換えず、表示と書き出しの直前に使う。
+    static func mapTodos(in text: String, _ transform: (String) -> String?) -> String {
         var ls = lines(of: text)
         let todos = scan(ls).filter { $0.section == .todos }
-        let resolved: Int?
-        if let expected {
-            resolved = todos.indices.contains(index) && todos[index].text == expected
-                ? index : todos.firstIndex { $0.text == expected }
-        } else {
-            resolved = todos.indices.contains(index) ? index : nil
+        guard !todos.isEmpty else { return text }
+        var remaining: [Int: Int] = [:]  // 節の見出し行 → 残る項目数
+        let results = todos.map { transform($0.text) }
+        for (t, r) in zip(todos, results) where r != nil { remaining[t.sectionStart, default: 0] += 1 }
+        // 後ろから置き換えて、前の項目の行番号をずらさない
+        for (t, r) in zip(todos, results).reversed() {
+            var newLines: [String]
+            if let r {
+                let item = "- " + r.replacingOccurrences(of: "\n", with: " ")
+                newLines = t.headingPrefix.map { [$0, item] } ?? [item]
+            } else {
+                let isLastOfSection = remaining[t.sectionStart, default: 0] == 0
+                    && todos.last(where: { $0.sectionStart == t.sectionStart })?.lines == t.lines
+                newLines = [t.headingPrefix, isLastOfSection ? "- なし" : nil].compactMap { $0 }
+            }
+            ls.replaceSubrange(t.lines, with: newLines)
         }
-        guard let resolved else { return text }
-        let target = todos[resolved]
-        let replacement = newText?.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
-        var newLines: [String]
-        if let replacement, !replacement.isEmpty {
-            // 見出しと同じ行にあった項目は、見出しを残して項目だけ差し替える
-            newLines = [(target.headingPrefix.map { $0 + "\n" } ?? "") + "- " + replacement]
-        } else {
-            let sectionEmpty = todos.filter { $0.sectionStart == target.sectionStart }.count == 1
-            newLines = [target.headingPrefix, sectionEmpty ? "- なし" : nil].compactMap { $0 }
-        }
-        newLines = newLines.flatMap { $0.components(separatedBy: "\n") }
-        ls.replaceSubrange(target.lines, with: newLines)
         return ls.joined(separator: "\n")
     }
 
