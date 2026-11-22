@@ -13,12 +13,17 @@ struct RootView: View {
     @State private var refreshTick = 0
     @ObservedObject private var ledgerStore = TodoLedgerStore.shared
     @State private var editingTodo: HomeSummary.Todo?
-    @State private var editText = ""
+    /// 編集画面を閉じた後に開く録音 (閉じる途中の遷移は無視されることがあるため、閉じ終わってから移る)。
+    @State private var pendingOpen: UUID?
     @State private var undo: TodoUndo?
+    /// やることの編集画面から録音の詳細へ移るための経路。
+    @State private var path = NavigationPath()
 
-    private func startEditing(_ t: HomeSummary.Todo) {
-        editText = t.text
-        editingTodo = t
+    private func startEditing(_ t: HomeSummary.Todo) { editingTodo = t }
+
+    /// 編集画面を開いている間に要約が作り直されても、今の一覧にある同じ項目に対して操作する。
+    private func current(_ t: HomeSummary.Todo) -> HomeSummary.Todo {
+        home?.todos.first { $0.id == t.id } ?? t
     }
 
     /// 完了・削除は台帳に記録し、数秒「元に戻す」を出す。要約の本文は書き換えない。
@@ -67,7 +72,7 @@ struct RootView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
                 // 最初の表示は「まとめ」と「TODO」を 1 画面で読めることを優先する。
                 // 文字起こしの処理状況や充電待ちは設定画面に置く (毎回見る情報ではないため)
@@ -86,7 +91,13 @@ struct RootView: View {
                                 .font(.callout).foregroundStyle(.secondary)
                         }
                         ForEach(home.todos) { t in
-                            NavigationLink(value: t.recordingID) { TodoRow(todo: t) { complete(t) } }
+                            // 押すと編集画面 (文言の編集・完了・削除・元の会話を開く)。丸を押すと完了
+                            TodoRow(todo: t) { complete(t) }
+                                .contentShape(.rect)
+                                .onTapGesture { startEditing(t) }
+                                .accessibilityAddTraits(.isButton)
+                                .accessibilityHint("編集画面を開きます")
+                                .accessibilityAction { startEditing(t) }
                             // 左へスワイプで削除・編集、右へスワイプで完了 (完了は一覧から外す)
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 Button(role: .destructive) { remove(t) } label: { Label("削除", systemImage: "trash") }
@@ -180,20 +191,71 @@ struct RootView: View {
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .fullScreenCover(isPresented: .constant(!onboardingDone)) { OnboardingView() }
-            .alert("やることを編集", isPresented: Binding(get: { editingTodo != nil }, set: { if !$0 { editingTodo = nil } })) {
-                TextField("やること", text: $editText, axis: .vertical)
-                Button("保存") {
-                    if let t = editingTodo {
-                        ledgerStore.perform(t.original) { $0.edit(t.original, startedAt: t.time, to: editText) }
-                        undo = nil  // 編集の後に古い「元に戻す」を押して編集まで消さない
-                    }
-                    editingTodo = nil
-                }
-                Button("キャンセル", role: .cancel) { editingTodo = nil }
-            } message: {
-                Text("空にして保存すると削除します")
+            .sheet(item: $editingTodo, onDismiss: {
+                if let id = pendingOpen { pendingOpen = nil; path.append(id) }
+            }) { t in
+                TodoEditSheet(todo: t,
+                              onSave: { text in
+                                  let c = current(t)
+                                  editingTodo = nil
+                                  // 空にしたら削除 (元に戻せるよう、削除と同じ扱いにする)
+                                  if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { remove(c); return }
+                                  ledgerStore.perform(c.original) { $0.edit(c.original, startedAt: c.time, to: text) }
+                                  undo = nil  // 編集の後に古い「元に戻す」を押して編集まで消さない
+                              },
+                              onComplete: { let c = current(t); editingTodo = nil; complete(c) },
+                              onDelete: { let c = current(t); editingTodo = nil; remove(c) },
+                              onOpen: { pendingOpen = t.recordingID; editingTodo = nil })
+                    .presentationDetents([.medium, .large])
             }
             .overlay(alignment: .bottom) { UndoBanner(undo: $undo) }
+        }
+    }
+}
+
+/// やることの編集画面。文言を直して保存するほか、完了・削除・元の会話を開くをここから選べる。
+private struct TodoEditSheet: View {
+    let todo: HomeSummary.Todo
+    @State private var text: String
+    var onSave: (String) -> Void
+    var onComplete: () -> Void
+    var onDelete: () -> Void
+    var onOpen: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    init(todo: HomeSummary.Todo, onSave: @escaping (String) -> Void, onComplete: @escaping () -> Void,
+         onDelete: @escaping () -> Void, onOpen: @escaping () -> Void) {
+        self.todo = todo
+        _text = State(initialValue: todo.text)
+        self.onSave = onSave; self.onComplete = onComplete; self.onDelete = onDelete; self.onOpen = onOpen
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("やること", text: $text, axis: .vertical)
+                        .lineLimit(2...8)
+                } footer: {
+                    Text("空にして保存すると削除します。元の要約の文言は変えず、表示と書き出しに反映します。")
+                }
+                Section {
+                    Button { onComplete() } label: { Label("完了にする", systemImage: "checkmark.circle") }
+                    Button { onOpen() } label: { Label("元の会話を開く", systemImage: "text.bubble") }
+                    Button(role: .destructive) { onDelete() } label: { Label("削除", systemImage: "trash") }
+                } footer: {
+                    HStack(spacing: 4) {
+                        Text(todo.time, format: .dateTime.month().day().hour().minute())
+                        if let c = todo.context { Text(c).lineLimit(1) }
+                    }
+                }
+            }
+            .navigationTitle("やることを編集")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("キャンセル") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button("保存") { onSave(text) }.bold() }
+            }
         }
     }
 }
@@ -220,6 +282,9 @@ private struct TodoRow: View {
                 }
                 .font(.caption2).foregroundStyle(.secondary)
             }
+            Spacer(minLength: 4)
+            Image(systemName: "pencil").font(.footnote).foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
         }
     }
 }
