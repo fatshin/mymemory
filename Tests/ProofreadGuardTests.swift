@@ -30,21 +30,35 @@ final class ProofreadGuardTests: XCTestCase {
 
     /// 本文にある誤変換だけを直し、本文に無い語の直しやモデルの書式が混ざった直しは捨てる。
     func testApplyKeepsOnlySafeFixes() {
-        let text = "新しい予約シス天の件で、佐藤さんに日程超生をお願いした。契約は二年縛り。"
+        let text = "佐藤さんに日程超生をお願いした。らいしゅうの会議は契約は二年縛り。"
         let fixes: [ProofreadGuard.Fix] = [
-            .init(wrong: "予約シス天", right: "予約システム"),
-            .init(wrong: "日程超生", right: "日程調整」}]}```json"),
+            .init(wrong: "日程超生", right: "日程調整"),
+            .init(wrong: "らいしゅう", right: "来週」}]}```json"),
             .init(wrong: "二年縛り", right: "2年間の縛り"),
             .init(wrong: "見つもり", right: "見積もり"),
         ]
-        XCTAssertEqual(ProofreadGuard.apply(fixes, to: text), "新しい予約システムの件で、佐藤さんに日程超生をお願いした。契約は二年縛り。")
+        XCTAssertEqual(ProofreadGuard.apply(fixes, to: text), "佐藤さんに日程調整をお願いした。らいしゅうの会議は契約は二年縛り。")
     }
 
-    /// 1 文字の語や、長さが大きく変わる直しは当てない (別の語への置き換えを防ぐ)。
-    func testRejectsShortOrLongReplacements() {
-        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "わ", right: "は"))
-        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "会議", right: "来週の定例の打ち合わせ"))
+    /// 読みが完全に同じ直し (同じ音の字の取り違え) だけを当てる。読みが 1 字でも違えば意味が変わりうるので当てない。
+    func testOnlySameReadingFixesAreSafe() {
         XCTAssertTrue(ProofreadGuard.isSafe(wrong: "説明かい", right: "説明会"))
-        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "二年か", right: "二年ですね"), "口調を変える直しは当てない")
+        XCTAssertTrue(ProofreadGuard.isSafe(wrong: "けいやくしょ", right: "契約書"))
+        XCTAssertTrue(ProofreadGuard.isSafe(wrong: "らいしゅう", right: "来週"))
+        XCTAssertTrue(ProofreadGuard.isSafe(wrong: "日程超生", right: "日程調整"))
+        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "わ", right: "は"), "1 字の語は直さない")
+        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "上がる", right: "下がる"))
+        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "加藤さん", right: "佐藤さん"))
+        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "送ります", right: "送りません"))
+        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "三時から", right: "二時から"))
+        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "二年か", right: "二年ですね"))
+        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "予約シス", right: "予約システム"))
+        XCTAssertFalse(ProofreadGuard.isSafe(wrong: "二割減らす方向で進める", right: "増やす方向で決めた"))
+    }
+
+    /// 本文に何度も現れる語は直さない (正しい語の一部を巻き添えで壊さない)。
+    func testSkipsFixWhenWrongAppearsMoreThanOnce() {
+        let text = "会議しつの予約と、しつもんの回答"
+        XCTAssertEqual(ProofreadGuard.apply([.init(wrong: "しつ", right: "室")], to: text), text)
     }
 }

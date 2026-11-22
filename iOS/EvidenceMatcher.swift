@@ -14,9 +14,49 @@ enum EvidenceMatcher {
     }
 
     static func isSupported(quote: String, in source: String) -> Bool {
-        let q = normalize(quote), t = normalize(source)
-        guard q.count >= minChars, !t.isEmpty else { return false }
-        return Double(longestCommonRun(q, t)) >= Double(q.count) * minRatio
+        sourceSentence(for: quote, in: source) != nil
+    }
+
+    /// 引用に最もよく一致する、元の文字起こしの文 (連続する 3 文まで)。一致が足りなければ nil。
+    /// 約束かどうかはモデルが書いた引用ではなく、この元の文で判定する (引用に足された語で約束に見せないため)。
+    /// 一致の長さが同じなら短い方を選ぶ (無関係な隣の文を判定に混ぜない)。
+    static func sourceSentence(for quote: String, in source: String) -> String? {
+        let q = normalize(quote)
+        guard q.count >= minChars else { return nil }
+        let all = sentences(source)
+        var best: (run: Int, length: Int, text: String)?
+        for start in all.indices {
+            for end in start..<min(start + maxWindowSentences, all.count) {
+                let text = all[start...end].joined(separator: "。")
+                let t = normalize(text)
+                guard !t.isEmpty else { continue }
+                let run = longestCommonRun(q, t)
+                if run > (best?.run ?? 0) || (run == best?.run && t.count < (best?.length ?? .max)) {
+                    best = (run, t.count, text)
+                }
+            }
+        }
+        guard let best, Double(best.run) >= Double(q.count) * minRatio else { return nil }
+        return best.text
+    }
+
+    /// 引用が複数の文にまたがるとき (「連絡します。金曜までにやっておきます」) に見る文の数。
+    static let maxWindowSentences = 3
+
+    /// 文に分ける。問いかけかどうかを後で判定できるよう、「？」は文の末尾に残す。
+    static func sentences(_ text: String) -> [String] {
+        var out: [String] = [], cur = ""
+        for ch in text {
+            if "？?".contains(ch) {
+                cur.append("？"); out.append(cur); cur = ""
+            } else if "。！!\n".contains(ch) {
+                out.append(cur); cur = ""
+            } else {
+                cur.append(ch)
+            }
+        }
+        out.append(cur)
+        return out.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
 
     /// 最長共通部分文字列の長さ (動的計画法、1 行分の記憶)。引用は短いので計算量は小さい。
@@ -34,24 +74,41 @@ enum EvidenceMatcher {
         return best
     }
 
-    /// 引用が「やる」という約束になっているか。約束の言い方があり、ぼかし・提案・仮定が無いものだけを TODO にする。
+    /// 発言が「やる」という約束になっているか。約束の言い方があり、ぼかし・提案・仮定が無いものだけを TODO にする。
+    /// 判定は最後の文の、最後の節で行う (「わかりました、日程調整しておきます」は約束、「すみません、それ私です」は約束ではない)。
     /// 例: 「金曜までにやっておきます」「明日の午前中に送ります」「日曜までに注文しておこう」は約束。
-    /// 「相談したほうがいいかもね」「数字で出せたら」「七時からです」は約束ではない。
-    static func isCommitment(_ quote: String) -> Bool {
-        let q = String(normalize(quote))
-        let hedges = ["かも", "ほうがいい", "方がいい", "たほうが", "おいおい", "検討", "たら", "れば", "かな", "でしょう", "だろう", "ようかな", "たい", "ないと"]
-        if hedges.contains(where: { q.contains($0) }) { return false }
-        let commitments = ["ます", "ておく", "ておき", "とく", "ておこう", "とこう", "やる", "やろう", "しよう", "までに", "ておいて", "といて", "お願い", "わかりました", "了解", "引き受け", "担当します"]
-        return commitments.contains(where: { q.contains($0) }) && !isStatement(q)
+    /// 「相談したほうがいいかもね」「七時から始まります」「送ってもらえますか」「金曜までに送りました」は約束ではない。
+    static func isCommitment(_ text: String) -> Bool {
+        // 複数の文なら最後の文 (約束を言い切る文) で判定する
+        let sentence = sentences(text).last ?? text
+        let whole = String(normalize(sentence))
+        let hedges = ["かも", "ほうがいい", "方がいい", "たほうが", "おいおい", "検討", "たら", "れば", "かな", "でしょう", "だろう", "ようかな", "ようか", "ろうか", "たい", "ないと"]
+        if hedges.contains(where: { whole.contains($0) }) { return false }
+        // 問いかけ (「金曜までに送れる？」「送りますよね」) は約束ではない
+        if sentence.hasSuffix("？") || String(normalize(sentence)).hasSuffix("よね") { return false }
+        let lastClause = sentence.split(whereSeparator: { "、,，".contains($0) }).last.map(String.init) ?? sentence
+        let last = stripFinalParticles(String(normalize(lastClause)))
+        // 問いかけ・過去の報告・事実の説明・否定で終わる節は約束ではない (「〜する予定です」は除く)
+        let nonPromiseEndings = ["ますか", "ました", "でした", "です", "ません", "だった"]
+        if nonPromiseEndings.contains(where: { last.hasSuffix($0) }), !last.hasSuffix("る予定です") { return false }
+        let commitments = ["ておく", "ておき", "とく", "ておこう", "とこう", "やる", "やろう", "しよう", "までに", "ておいて", "といて", "お願いします", "引き受け", "担当します", "る予定です"]
+        if commitments.contains(where: { last.contains($0) }) { return true }
+        // 「〜します」「〜送ります」のような意思の「ます」だけを約束とみなす (「始まります」「あります」は予定や事実)
+        let nonVolitional = ["まります", "なります", "あります", "ています", "でいます", "ございます", "られます", "かります", "思います", "がいます", "違います", "おります"]
+        return last.hasSuffix("ます") && !nonVolitional.contains(where: { last.hasSuffix($0) })
     }
 
-    /// 「〜です」「〜でした」「〜ました」だけで終わる、事実や過去の報告 (約束ではない)。
-    private static func isStatement(_ q: String) -> Bool {
-        let futureMarks = ["ます", "ておく", "ておき", "とく", "ておこう", "とこう", "やる", "やろう", "しよう", "までに", "ておいて", "といて", "お願い", "わかりました", "引き受け"]
-        let past = q.hasSuffix("ました") || q.hasSuffix("でした") || q.hasSuffix("です")
-        guard past else { return false }
-        // 過去・事実の言い方で終わっていても、途中に約束があれば約束とみなす (「わかりました、調整しておきます」)
-        let body = q.hasSuffix("ました") ? String(q.dropLast(3)) : q
-        return !futureMarks.contains(where: { body.contains($0) && $0 != "ます" })
+    /// 文末の「ね」「よ」などを外す (「送りますね」「送りましたよ」を語尾で正しく判定するため)。
+    static func stripFinalParticles(_ s: String) -> String {
+        var t = s
+        let particles = ["けど", "から", "ので", "ね", "よ", "わ", "ー", "ｰ", "〜", "~"]
+        var changed = true
+        while changed {
+            changed = false
+            for p in particles where t.count > p.count && t.hasSuffix(p) {
+                t = String(t.dropLast(p.count)); changed = true
+            }
+        }
+        return t
     }
 }

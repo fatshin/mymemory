@@ -65,7 +65,7 @@ final class WatchRecorder: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - Control (すべて利用者の操作から呼ぶ)
+    // MARK: - Control (利用者の操作と、アプリを開いたときの自動開始から呼ぶ)
 
     func start() {
         // 権限要求の待ち中に再タップされても、録音を二重に起動しない
@@ -94,6 +94,34 @@ final class WatchRecorder: NSObject, ObservableObject {
         autoResumeTask?.cancel()
         autoResumeTask = nil
         return true
+    }
+
+    /// 開いたら自動で録音する設定 (UserDefaults のキー)。既定は ON。
+    static let autoStartKey = "autoStartOnOpen"
+    /// 利用者が停止ボタンで止めた日時。その日は自動で始めない。電池切れによる停止では記録しない。
+    static let lastManualStopKey = "lastManualStopAt"
+
+    /// 前面に来たときに呼ぶ。設定が ON で、止まっていて、今日まだ利用者が止めていなければ録音を始める。
+    /// 一時停止中 (書き込み失敗でタップ待ちを含む) と開始処理中は何もしない。
+    func autoStartIfNeeded(now: Date = Date()) {
+        let defaults = UserDefaults.standard
+        let enabled = defaults.object(forKey: Self.autoStartKey) as? Bool ?? true
+        let lastStop = defaults.object(forKey: Self.lastManualStopKey) as? Date
+        guard AutoStartPolicy.shouldStart(enabled: enabled, isActive: isRecording || isPaused || starting,
+                                          isBatteryLow: isBatteryLow, lastManualStop: lastStop, now: now) else { return }
+        start()
+    }
+
+    /// 開始ボタンから呼ぶ。利用者が自分で始めたので、停止による自動開始の抑止を解く。
+    func userStart() {
+        UserDefaults.standard.removeObject(forKey: Self.lastManualStopKey)
+        start()
+    }
+
+    /// 停止ボタンから呼ぶ。今日は自動で始めないよう日時を残す。
+    func userStop() {
+        UserDefaults.standard.set(Date(), forKey: Self.lastManualStopKey)
+        stop()
     }
 
     func stop() {
