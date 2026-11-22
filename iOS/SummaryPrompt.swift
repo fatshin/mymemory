@@ -3,6 +3,56 @@ import Foundation
 /// 要約の指示文。端末内と外部 API で同じ基準を使う。
 /// 見出し (【概要】【要点】【決定事項】【TODO】) は SummarySections が決定事項と TODO の一覧に使うため、変えるときは合わせて直す。
 enum SummaryPrompt {
+    /// 利用者が設定画面で書く、要約への追加の指示 (空なら使わない)。基本の指示の後ろに付け、見出しと形式は変えさせない
+    /// (見出しが変わると決定事項・TODO の一覧と台帳が読めなくなるため)。
+    static let customKey = "summaryCustomInstruction"
+    /// 端末内モデルの文脈上限 (4,096 トークン) に、区間の入力・型の説明・出力と一緒に収まる長さ。
+    static let customMaxChars = 300
+
+    static var custom: String {
+        get { clean(UserDefaults.standard.string(forKey: customKey) ?? "") }
+        set { UserDefaults.standard.set(clean(newValue), forKey: customKey) }
+    }
+
+    /// 前後の空白を除き、上限の文字数で切る。
+    static func clean(_ s: String) -> String {
+        String(s.trimmingCharacters(in: .whitespacesAndNewlines).prefix(customMaxChars))
+    }
+
+    /// 要約に必要な 4 つの見出し。追加の指示で消えたり変わったりしたら、その要約は使わない。
+    static let requiredHeadings = ["【概要】", "【要点】", "【決定事項】", "【TODO】"]
+
+    static func hasRequiredHeadings(_ summary: String) -> Bool {
+        let half = summary.applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? summary
+        return requiredHeadings.allSatisfy { h in
+            let hh = h.applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? h
+            return half.localizedCaseInsensitiveContains(hh)
+        }
+    }
+
+    /// 比べる画面に出す、要約の項目数と文字数。
+    struct Stats: Equatable {
+        let keyPoints: Int
+        let decisions: Int
+        let todos: Int
+        let chars: Int
+    }
+
+    static func stats(_ summary: String) -> Stats {
+        let items = SummarySections.reviewItems(in: summary)
+        return Stats(keyPoints: items.filter { $0.section == .keyPoints }.count,
+                     decisions: items.filter { $0.section == .decisions }.count,
+                     todos: items.filter { $0.section == .todos }.count,
+                     chars: summary.trimmingCharacters(in: .whitespacesAndNewlines).count)
+    }
+
+    /// 基本の指示に追加の指示を付ける。追加が空なら基本の指示のまま。
+    static func withCustom(_ base: String, _ extra: String) -> String {
+        let e = clean(extra)
+        guard !e.isEmpty else { return base }
+        return base + "\n\n利用者からの追加の指示 (見出し・順序・「- 」の箇条書きの形式は変えずに従う。入力にないことは書かない):\n" + e
+    }
+
     /// TODO の基準。曖昧なものを入れると一覧が意味をなさなくなるため、明言された行動に絞る。
     static let todoRule = """
     【TODO】には、誰か (話し手本人か相手) が「やる」「やっておく」「〜までに〜する」とはっきり言った、具体的な行動だけを書く。\

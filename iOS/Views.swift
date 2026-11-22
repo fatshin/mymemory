@@ -579,6 +579,9 @@ struct SettingsView: View {
                     Text("録音と文字起こしはこの端末内に保存します。自動削除で消すのは文字起こし済みの音声だけで、文字起こしと要約は残ります。録音は詳細画面のメニューから個別に削除できます。")
                 }
                 Section {
+                    NavigationLink { PromptLabView() } label: {
+                        Label("要約の指示をカスタマイズ・比べる", systemImage: "text.badge.star")
+                    }
                     Link("プライバシーポリシー", destination: AppLinks.privacy)
                 }
             }

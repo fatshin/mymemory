@@ -1,0 +1,39 @@
+import XCTest
+
+/// 追加の指示は基本の指示の後ろに付くだけで、空なら基本の指示を変えないことを固定する (見出しの形式を守るため)。
+final class SummaryPromptTests: XCTestCase {
+    func testEmptyExtraKeepsBasePrompt() {
+        XCTAssertEqual(SummaryPrompt.withCustom(SummaryPrompt.final, ""), SummaryPrompt.final)
+        XCTAssertEqual(SummaryPrompt.withCustom(SummaryPrompt.final, "  \n "), SummaryPrompt.final)
+    }
+
+    func testExtraIsAppendedAfterBaseWithFormatGuard() {
+        let p = SummaryPrompt.withCustom(SummaryPrompt.final, "TODO には担当者を必ず書く")
+        XCTAssertTrue(p.hasPrefix(SummaryPrompt.final))
+        XCTAssertTrue(p.hasSuffix("TODO には担当者を必ず書く"))
+        XCTAssertTrue(p.contains("見出し・順序"))
+    }
+
+    func testExtraIsTrimmedAndCapped() {
+        XCTAssertEqual(SummaryPrompt.clean(" a "), "a")
+        XCTAssertEqual(SummaryPrompt.clean(String(repeating: "あ", count: 700)).count, SummaryPrompt.customMaxChars)
+    }
+
+    func testStatsCountsItemsPerSection() {
+        let s = "【概要】\n話した。\n\n【要点】\n- A\n- B\n\n【決定事項】\n- なし\n\n【TODO】\n- 資料を送る\n\n(端末内で要約)"
+        let st = SummaryPrompt.stats(s)
+        XCTAssertEqual(st.keyPoints, 2)
+        XCTAssertEqual(st.decisions, 0)
+        XCTAssertEqual(st.todos, 1)
+    }
+}
+
+/// 追加の指示で見出しが崩れた要約を見分ける (崩れたら追加の指示なしで作り直すため)。
+final class SummaryPromptHeadingTests: XCTestCase {
+    func testDetectsMissingHeadings() {
+        XCTAssertTrue(SummaryPrompt.hasRequiredHeadings("【概要】\nx\n【要点】\n- a\n【決定事項】\n- なし\n【TODO】\n- b"))
+        XCTAssertTrue(SummaryPrompt.hasRequiredHeadings("【概要】\nx\n【要点】\n- a\n【決定事項】\n- なし\n【ＴＯＤＯ】\n- b"))
+        XCTAssertFalse(SummaryPrompt.hasRequiredHeadings("【概要】\nx\n【要点】\n- a\n【決定事項】\n- なし"))
+        XCTAssertFalse(SummaryPrompt.hasRequiredHeadings("Summary\n- a\nTODO\n- b"))
+    }
+}

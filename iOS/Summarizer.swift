@@ -53,6 +53,8 @@ enum Summarizer {
         var providerName = Summarizer.provider.displayName
         /// 端末内モデルで見直した (SummaryReviewer)。
         var reviewed = false
+        /// 追加の指示で見出しが崩れたため、追加の指示なしで作り直した。
+        var customIgnored = false
         /// 末尾の注記は「で要約)」で終える (ReflectionSections.isRouteLabel が本文と分けるため)。
         var labeled: String {
             text + "\n\n(" + (reviewed ? "見直し済み・" : "") + (route == .onDevice ? "端末内で要約" : "\(providerName) で要約") + ")"
@@ -140,12 +142,23 @@ enum Summarizer {
     }
 
     /// 経路は呼び出し側で事前に決めて渡す。ボタンに表示した経路と実際の送信先を一致させるため。
-    static func summarize(_ transcript: String, route: SummaryRoute) async throws -> Result {
+    /// - Parameter extra: 追加の指示。nil なら設定に保存したもの (試して比べる画面だけが編集中の指示を渡す)
+    static func summarize(_ transcript: String, route: SummaryRoute, extra: String? = nil) async throws -> Result {
+        let e = extra ?? SummaryPrompt.custom
+        let first = try await summarizeOnce(transcript, route: route, extra: e)
+        // 追加の指示で見出しが崩れた要約は、決定事項・TODO の一覧と台帳が読めないため、追加の指示なしで作り直す
+        if e.isEmpty || SummaryPrompt.hasRequiredHeadings(first.text) { return first }
+        var retry = try await summarizeOnce(transcript, route: route, extra: "")
+        retry.customIgnored = true
+        return retry
+    }
+
+    private static func summarizeOnce(_ transcript: String, route: SummaryRoute, extra: String) async throws -> Result {
         switch route {
-        case .onDevice: return Result(text: try await OnDeviceSummarizer.summarize(transcript), route: route)
+        case .onDevice: return Result(text: try await OnDeviceSummarizer.summarize(transcript, extra: extra), route: route)
         case .remote:
             let name = provider.displayName
-            return Result(text: try await remoteSummarize(transcript), route: route, providerName: name)
+            return Result(text: try await remoteSummarize(transcript, extra: extra), route: route, providerName: name)
         }
     }
 
@@ -158,9 +171,9 @@ enum Summarizer {
         }
     }
 
-    private static func remoteSummarize(_ transcript: String) async throws -> String {
+    private static func remoteSummarize(_ transcript: String, extra: String) async throws -> String {
         try await call(prompt: """
-        \(SummaryPrompt.final)
+        \(SummaryPrompt.withCustom(SummaryPrompt.final, extra))
 
         <transcript>
         \(transcript)
