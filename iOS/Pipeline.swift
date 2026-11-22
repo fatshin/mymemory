@@ -51,6 +51,9 @@ final class Pipeline: NSObject, ObservableObject {
     private var currentFileSeconds: Double = 0
     /// 実行中の drain。前面・通知・バックグラウンドのどこから呼んでも 1 本だけ動く。
     private var drainTask: Task<Void, Never>?
+    /// 自動要約は文字起こしとは別に動かす (外部 API の待ちで文字起こしと「今すぐ文字起こし」を止めない)。
+    private var summaryTask: Task<Void, Never>?
+    private var summaryToken = UUID()
 
     /// 日本語向け。モデル名はWhisperKit側の対応表に依存 (要確認)。
     static let modelName = "large-v3-v20240930_626MB"
@@ -202,9 +205,13 @@ final class Pipeline: NSObject, ObservableObject {
     @discardableResult
     private func startDrain() -> Task<Void, Never> {
         if let running = drainTask { return running }
+        // 文字起こしを優先する。文字起こす録音があるときだけ、走っている自動要約を止めて後で始め直す
+        // (要約だけの drain で止めると、外部 API の結果を捨てて送り直すことになる)
+        if !queue.isEmpty { stopSummaryBacklog() }
         let task = Task { @MainActor [self] in
             await runDrain()
             drainTask = nil
+            if !Task.isCancelled { startSummaryBacklog() }
             // 次の通常の drain には明示操作の緩和を引き継がない (非充電のまま走り続けるのを防ぐ)
             userRun.clear()
             if queue.isEmpty { continuedNote = nil }
@@ -271,6 +278,8 @@ final class Pipeline: NSObject, ObservableObject {
             if progressSink === handle.progress { progressSink = nil }
             let finished = !task.isCancelled && queue.isEmpty
             handle.complete(success: finished)
+            // 継続タスクの中では要約しないため、終わってから始める (前面にいるときだけ動く)
+            startSummaryBacklog()
             // 中止・失効で止まった場合も、保留があれば通常の電力判定をやり直し、状態表示とボタンを更新する
             if !queue.isEmpty { startDrain() }
         }
@@ -330,10 +339,7 @@ final class Pipeline: NSObject, ObservableObject {
                     ? "電池残量が\(Int(PowerPolicy.minimumLevelUserInitiated * 100))%未満のため停止 (\(queue.count)件保留)"
                     : "充電待ち (\(queue.count)件保留)"
                 BackgroundTranscribe.schedule(needsNetwork: !modelOnDisk)
-                // 文字起こしは充電待ちでも、済んだ分の要約は外部 API なら進められる
-                let status = modelStatus
-                await summarizeBacklog()
-                modelStatus = status
+                // 文字起こしは充電待ちでも、済んだ分の要約は外部 API なら進められる (drain の後に別のタスクで行う)
                 return
             }
             // 継続タスクの進捗の分母は、新しく届いた録音も含めて取り直す
@@ -423,7 +429,28 @@ final class Pipeline: NSObject, ObservableObject {
             try? context.save()
         }
         if !Task.isCancelled { await proofreadBacklog() }
-        if !Task.isCancelled { await summarizeBacklog() }
+    }
+
+    /// 前面にいるときだけ始める。背景タスクは drain が終わると OS に完了を伝えるため、その後の通信は途中で止められ、
+    /// 失敗として数えられて自動要約の対象から外れてしまう。背景で済んだ録音は、次に開いたときに要約する。
+    func startSummaryBacklog() {
+        guard summaryTask == nil, drainTask == nil, progressSink == nil, UIApplication.shared.applicationState == .active else { return }
+        let token = UUID()
+        summaryToken = token
+        summaryTask = Task { @MainActor [self] in
+            await summarizeBacklog()
+            if summaryToken == token { summaryTask = nil }
+        }
+    }
+
+    /// 止めた分は間隔を待たずに、次の drain の後で始め直せるようにする。
+    private func stopSummaryBacklog() {
+        guard let t = summaryTask else { return }
+        t.cancel()
+        if modelStatus.hasPrefix("要約を作成中") { modelStatus = "準備完了" }
+        summaryTask = nil
+        summaryToken = UUID()
+        lastAutoSummaryRun = nil
     }
 
     /// 校正してよい状態か (外部電源につながっていて、端末内モデルが使える)。
@@ -486,8 +513,10 @@ final class Pipeline: NSObject, ObservableObject {
         guard let recs = try? context.fetch(d) else { return }
         let targets = recs.filter { (autoSummaryFailures[$0.id] ?? 0) < Self.autoSummaryMaxFailures }
         guard !targets.isEmpty else { return }
-        // 中断・取り消しでも「要約を作成中」の表示を残さない
-        defer { if modelStatus.hasPrefix("要約を作成中") { modelStatus = "準備完了" } }
+        // 中断・取り消しでも「要約を作成中」の表示を残さない (「充電待ち」などの表示に戻す)
+        let statusBefore = modelStatus
+        // 取り消された古い要約は表示に触れない (文字起こしの表示を上書きしない)
+        defer { if !Task.isCancelled, modelStatus.hasPrefix("要約を作成中") { modelStatus = statusBefore } }
         // 削除・要約済み・対象外になった録音の持ち越しは捨てる (文字起こしをメモリに残さない)
         let ids = Set(targets.map(\.id))
         awaitingReview = awaitingReview.filter { ids.contains($0.key) }
@@ -499,6 +528,7 @@ final class Pipeline: NSObject, ObservableObject {
             // 許可の取り消し・送信先の切り替え・充電の抜き差しを 1 件ごとに反映する
             guard let route = try? Summarizer.currentRoute(), route == firstRoute, autoSummaryPowerOK(route) else { return }
             guard let t = rec.transcript, !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            guard !Task.isCancelled else { return }
             modelStatus = "要約を作成中 \(i + 1) / \(targets.count)"
             do {
                 let draft: Summarizer.Result

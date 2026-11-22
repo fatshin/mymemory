@@ -5,6 +5,7 @@ import SwiftData
 struct MyMemoryApp: App {
     let container: ModelContainer
     @StateObject private var pipeline: Pipeline
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         let c = try! ModelContainer(for: Recording.self)
@@ -24,5 +25,7 @@ struct MyMemoryApp: App {
                 .tint(Theme.accent)
         }
         .modelContainer(container)
+        // 背景で文字起こしだけ済んだ録音は、前面に戻ったときに自動要約する (文字起こし中は drain の後に始まる)
+        .onChange(of: scenePhase) { _, p in if p == .active { pipeline.startSummaryBacklog() } }
     }
 }
