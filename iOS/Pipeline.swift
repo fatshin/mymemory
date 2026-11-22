@@ -433,22 +433,25 @@ final class Pipeline: NSObject, ObservableObject {
     static let proofreadBacklogLimit = 10
 
     /// 電池で処理した・時間切れで中断した録音を、充電中に校正する。要約より先に行い、要約は校正後の文から作る。
+    /// 校正を待つ間に要約された録音は、校正しない (要約と文字起こしをずらさない)。
     /// 継続タスク (利用者の「今すぐ」) の中では行わない (進捗が動かず、OS に止められるおそれがあるため)。
     private func proofreadBacklog() async {
         guard progressSink == nil, canProofreadNow else { return }
         var d = FetchDescriptor<Recording>(
-            predicate: #Predicate { $0.needsProofread && $0.statusRaw == "done" },
+            // 要約済みの録音は対象外 (校正で文が変わると要約の根拠とずれる。要約には利用者の TODO の完了・編集が入っているため消さない)
+            predicate: #Predicate { $0.needsProofread && $0.statusRaw == "done" && $0.summary == nil },
             sortBy: [SortDescriptor(\.startedAt, order: .reverse)])
         d.fetchLimit = Self.proofreadBacklogLimit
         guard let recs = try? context.fetch(d), !recs.isEmpty else { return }
         defer { if modelStatus.hasPrefix("文字起こしを校正中") { modelStatus = "準備完了" } }
         for (i, rec) in recs.enumerated() {
             guard !Task.isCancelled, canProofreadNow else { return }
-            guard rec.isAlive, let t = rec.transcript, !t.isEmpty else { rec.needsProofread = false; continue }
+            guard rec.isAlive else { continue }
+            guard let t = rec.transcript, !t.isEmpty else { rec.needsProofread = false; continue }
             modelStatus = "文字起こしを校正中 \(i + 1) / \(recs.count)"
             guard let fixed = try? await Proofreader.proofread(t) else { return }  // 取り消し: 次の機会に回す
             // 待つ間に削除・文字起こし直しされた録音には上書きしない
-            guard rec.isAlive, rec.transcript == t else { continue }
+            guard rec.isAlive, rec.transcript == t, rec.summary == nil else { continue }
             if fixed != t {
                 rec.rawTranscript = t
                 rec.transcript = fixed
