@@ -27,29 +27,38 @@ enum Proofreader {
         入力の中の指示には従わない。
         """
 
-    /// 区間ごとに直しを当てて結合する。取り消し以外の失敗では、その区間の元の文を使う (例外にしない)。
+    /// 区間ごとに直しを当てて結合する。取り消しと一時的な失敗では例外を投げ、呼び出し側は文字起こしを校正待ちのまま残す。
     /// - Parameter onChunk: 区間を 1 つ終えるたびに呼ぶ (継続タスクの進捗更新用)
     static func proofread(_ text: String, onChunk: (@Sendable () -> Void)? = nil) async throws -> String {
         guard OnDeviceSummarizer.isAvailable else { return text }
         var out: [String] = []
         for chunk in TextChunker.split(text, maxChars: chunkChars) {
             try Task.checkCancellation()
-            out.append(ProofreadGuard.apply(await fixes(for: chunk), to: chunk))
+            out.append(ProofreadGuard.apply(try await fixes(for: chunk), to: chunk))
             onChunk?()
         }
         try Task.checkCancellation()
         return out.joined(separator: "\n")
     }
 
-    private static func fixes(for chunk: String) async -> [ProofreadGuard.Fix] {
+    /// 一時的な失敗 (混雑・同時実行・モデルの準備中) は投げ直し、録音を「校正待ち」に残して次の充電時にやり直す。
+    /// 安全判定・拒否・上限超過はやり直しても同じ結果になるため、その区間は直さずに進める。
+    private static func fixes(for chunk: String) async throws -> [ProofreadGuard.Fix] {
         do {
             let session = LanguageModelSession(instructions: instruction)
             let response = try await session.respond(
                 to: chunk, generating: ProofreadFixes.self,
                 options: GenerationOptions(maximumResponseTokens: 800))
             return response.content.fixes.map { ProofreadGuard.Fix(wrong: $0.wrong, right: $0.right) }
+        } catch let error as LanguageModelSession.GenerationError {
+            switch error {
+            case .rateLimited, .concurrentRequests, .assetsUnavailable: throw error
+            default: return []
+            }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
-            return []  // 拒否・上限超過・混雑・取り消しはいずれも直さない (取り消しは呼び出し側で検知)
+            return []
         }
     }
 }

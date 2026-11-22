@@ -11,6 +11,8 @@ final class Recording {
     var transcript: String?
     /// 校正する前の文字起こし (Whisper の出力そのまま)。校正しなかった録音では nil。
     var rawTranscript: String?
+    /// 校正がまだ済んでいない (電池で処理した・時間切れで中断した)。次に充電しているときに校正する。
+    var needsProofread: Bool = false
     var summary: String?
     var statusRaw: String         // pending / transcribing / done / failed
     var errorMessage: String?
