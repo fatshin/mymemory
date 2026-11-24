@@ -22,7 +22,12 @@ final class Pipeline: NSObject, ObservableObject {
 
     private let context: ModelContext
     private let transcriber = Transcriber()
-    private var modelLoaded = false
+    /// 準備ができた文字起こしの仕組み。切り替えたら読み込みの表示をやり直す。
+    private var loadedEngine: TranscriptionEngine?
+    private var modelLoaded: Bool {
+        get { loadedEngine == TranscriptionEngine.current }
+        set { loadedEngine = newValue ? TranscriptionEngine.current : nil }
+    }
     /// 一度でもモデルを取得・ロードできたか。再起動後も保持し、取得済みなら BG 起動で通信を要求しない。
     nonisolated private static let modelFolderKey = "modelFolderRelative"
     /// コンテナのパスはアプリ更新で変わりうるため、Documents からの相対パスで保存する。
@@ -61,7 +66,10 @@ final class Pipeline: NSObject, ObservableObject {
         guard path.hasPrefix(docs + "/") else { return }
         UserDefaults.standard.set(String(path.dropFirst(docs.count)), forKey: modelFolderKey)
     }
-    private var modelOnDisk: Bool { Self.savedModelFolder() != nil }
+    /// 文字起こしに通信が要らないか。iOS 標準の音声認識は認識データを iOS が管理するため、取得済みとみなす。
+    private var modelOnDisk: Bool {
+        TranscriptionEngine.current == .apple ? AppleSpeech.installedOnce : Self.savedModelFolder() != nil
+    }
     /// モデル取得失敗の連続回数。上限で自動再試行を止め、通知のたびの再ダウンロードを防ぐ。
     private var modelLoadFailures = 0
     private static let maxModelLoadFailures = 3
@@ -94,12 +102,22 @@ final class Pipeline: NSObject, ObservableObject {
         guard active else { return }
         if !queue.isEmpty, canTranscribeNow(userInitiated: foregroundRun) {
             startDrain()
+            continueInBackgroundIfCheap()
         } else if drainTask == nil {
             startSummaryBacklog()
         }
     }
 
     private var foregroundRun: Bool { foregroundActive && !ProcessInfo.processInfo.isLowPowerModeEnabled }
+
+    /// アプリを開いたときに保留があれば、画面を閉じても文字起こしを続ける継続タスクを申請する。
+    /// 省電力のため、充電中か、電池残量 50% 以上かつ低電力モードでないときだけ (「今すぐ」と違い 20% までは使わない)。
+    /// 背景では通常の電力判定で 1 件ごとに確かめ、条件を外れたら止まる。
+    private func continueInBackgroundIfCheap() {
+        guard continuedRegistered, modelOnDisk, progressSink == nil, !userRun.isActive, !queue.isEmpty,
+              canTranscribeNow(userInitiated: false) else { return }
+        _ = BackgroundTranscribe.submitContinued(pending: queue.count)
+    }
 
     /// 日本語向け。モデル名はWhisperKit側の対応表に依存 (要確認)。
     nonisolated static let modelName = "large-v3-v20240930_626MB"
@@ -432,7 +450,8 @@ final class Pipeline: NSObject, ObservableObject {
                     let start = Date()
                     while !Task.isCancelled {
                         let m = Int(Date().timeIntervalSince(start) / 60)
-                        let base = onDisk ? "文字起こしモデルを読み込み中 (通信なし)" : "文字起こしモデルをダウンロード中 (初回のみ・約630MB)"
+                        let base = TranscriptionEngine.current == .apple ? "iOS 標準の音声認識を準備中"
+                            : onDisk ? "文字起こしモデルを読み込み中 (通信なし)" : "文字起こしモデルをダウンロード中 (初回のみ・約630MB)"
                         self?.modelStatus = base + (m > 0 ? " \(m)分経過・画面を開いたままにしてください" : "…")
                         try? await Task.sleep(for: .seconds(20))
                     }
@@ -737,6 +756,22 @@ final class Transcriber: @unchecked Sendable {
         // 無音ならモデルを読み込まずに終える (Whisper は無音から定型文を作るうえ、電力も使う)
         let level = AudioLevel.measure(URL(fileURLWithPath: audioPath))
         if let level, level.isSilent { return Output(text: "", level: level, skippedSilent: true) }
+        // 小さい声を持ち上げた音声を、選んだ仕組みに渡す (無音の判定は上で元の音量で済ませている)
+        let samples = AudioGain.normalized(try AudioProcessor.loadAudioAsFloatArray(fromPath: audioPath))
+        if TranscriptionEngine.current == .apple {
+            do {
+                // 認識データの確認・取得 (初回だけ通信) を済ませてから「文字起こし中」にする
+                let module = try await AppleSpeech.makeTranscriber()
+                onReady?()
+                let text = try await AppleSpeech.transcribe(samples: samples, module: module) { seconds in
+                    onWindow?(Int(seconds / 30))
+                }
+                let segments = text.components(separatedBy: "\n").map { TranscriptCleaner.Segment(text: $0) }
+                return Output(text: TranscriptCleaner.clean(segments), level: level, skippedSilent: false)
+            } catch is AppleSpeech.Unavailable {
+                // 日本語に対応していない端末では Whisper で続ける
+            }
+        }
         let w: WhisperKit
         if let loaded = whisper {
             w = loaded
@@ -765,8 +800,6 @@ final class Transcriber: @unchecked Sendable {
         // 推論量は減らず並列度が上がるため使わない。
         onReady?()
         var lastWindow = -1
-        // 無音の判定は元の音量で行い (上で済み)、Whisper には小さい声を持ち上げた音声を渡す
-        let samples = AudioGain.normalized(try AudioProcessor.loadAudioAsFloatArray(fromPath: audioPath))
         let results: [TranscriptionResult] = try await w.transcribe(
             audioArray: samples,
             decodeOptions: DecodingOptions(language: "ja", skipSpecialTokens: true, promptTokens: promptTokens(w))

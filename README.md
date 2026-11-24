@@ -1,10 +1,10 @@
 # MyMemory
 
-Apple Watch で録音 → iPhone で端末内の文字起こし (日本語, WhisperKit) → 端末内の要約 (Foundation Models)。外部 API での要約は、利用者が設定で許可したときだけ使う。
+Apple Watch で録音 → iPhone で端末内の文字起こし (日本語。既定は iOS 標準の SpeechAnalyzer、設定で WhisperKit に切り替え可) → 端末内の要約 (Foundation Models)。外部 API での要約は、利用者が設定で許可したときだけ使う。
 
 ## 構成
 - `Watch/` : 録音 (AVAudioEngine を止めずに 10 分ごとにファイルを切り替え、`UIBackgroundModes: audio` で画面消灯中も継続) → WatchConnectivity 転送
-- `iOS/`   : 受信 → SwiftData 保存 → WhisperKit 文字起こし → 要約 (既定は端末内。設定と要約のたびに端末内か外部 API かを選べる。外部 API は明示的な許可 + 疎通確認済みの API キーがあるときだけ、テキストのみ送信)。決定事項・TODO の一覧 (要約から抽出)、書き出し (Markdown)、初回同意、古い音声の自動削除 (任意)
+- `iOS/`   : 受信 → SwiftData 保存 → 文字起こし (iOS 標準 / WhisperKit、`iOS/AppleSpeech.swift`) → 要約 (既定は端末内。設定と要約のたびに端末内か外部 API かを選べる。外部 API は明示的な許可 + 疎通確認済みの API キーがあるときだけ、テキストのみ送信)。決定事項・TODO の一覧 (要約から抽出)、書き出し (Markdown)、初回同意、古い音声の自動削除 (任意)
 - `Shared/`: 転送メタデータキー、録音の区切り (`ChunkWriter`)
 - `project.yml`: XcodeGen 定義
 

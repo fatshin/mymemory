@@ -477,6 +477,7 @@ extension Recording {
 }
 
 struct SettingsView: View {
+    @State private var engine = TranscriptionEngine.current
     @State private var provider = Summarizer.provider
     @State private var keys: [RemoteProvider: String] = Dictionary(uniqueKeysWithValues: RemoteProvider.allCases.map { ($0, Keychain.get($0.keyName) ?? "") })
     @State private var models: [RemoteProvider: String] = Dictionary(uniqueKeysWithValues: RemoteProvider.allCases.map { ($0, UserDefaults.standard.string(forKey: Summarizer.modelKey($0)) ?? "") })
@@ -499,6 +500,10 @@ struct SettingsView: View {
                 // 文字起こしの処理状況と充電待ちの操作。メイン画面からはここへ移した
                 Section("文字起こし") {
                     Label(pipeline.modelStatus, systemImage: "waveform")
+                    Picker("文字起こしに使う", selection: $engine) {
+                        ForEach(TranscriptionEngine.allCases) { Text($0.displayName).tag($0) }
+                    }
+                    .onChange(of: engine) { TranscriptionEngine.current = engine }  // 次の録音から使う
                     if let note = pipeline.continuedNote {
                         Label(note, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                     }
