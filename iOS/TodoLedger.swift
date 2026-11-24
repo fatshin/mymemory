@@ -128,9 +128,24 @@ struct TodoLedger: Codable, Equatable {
             .sorted { ($0.completedAt ?? $0.changedAt) > ($1.completedAt ?? $1.changedAt) }
     }
 
-    /// 要約の【TODO】に台帳を重ねた文 (完了は「[x] 」を付け、削除は消し、編集後の文言にする)。
-    func overlay(summary: String, startedAt: Date) -> String {
-        SummarySections.mapTodos(in: summary) { t in
+    /// 決定事項も同じ台帳で削除・編集する。決定事項は会議ごとのものなので、鍵に録音を含める
+    /// (同じ文言でも別の録音の決定事項や、同じ文言の TODO には効かせない)。
+    static func decisionOriginal(_ text: String, recording: UUID) -> String { "決定事項|\(recording.uuidString)|" + text }
+
+    /// 決定事項の表示。消していれば nil、編集していれば編集後の文言。
+    func resolveDecision(_ text: String, recording: UUID, startedAt: Date) -> String? {
+        let original = Self.decisionOriginal(text, recording: recording)
+        switch resolve(original, startedAt: startedAt) {
+        case .deleted: return nil
+        case .open(let s), .completed(let s, _): return s == original ? text : s
+        }
+    }
+
+    /// 要約の【決定事項】【TODO】に台帳を重ねた文 (完了は「[x] 」を付け、削除は消し、編集後の文言にする)。
+    /// 決定事項は録音 (recording) が分かるときだけ重ねる。
+    func overlay(summary: String, startedAt: Date, recording: UUID? = nil) -> String {
+        SummarySections.mapItems(in: summary, sections: recording == nil ? [.todos] : [.decisions, .todos]) { section, _, t in
+            if section == .decisions, let recording { return resolveDecision(t, recording: recording, startedAt: startedAt) }
             switch resolve(t, startedAt: startedAt) {
             case .open(let s): return s
             case .completed(let s, _): return "[x] " + s

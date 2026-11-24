@@ -82,7 +82,10 @@ struct HomeSummary {
         let todos = openTodos(from: recordings.filter { $0.startedAt >= cutoff }, ledger: ledger)
         // 決定事項は表示する日のもの。振り返りがあればそれを使う (7日より前の日を表示していても拾う)
         let decisions = saved.map { SummarySections.parse($0.text).decisions }
-            ?? items.flatMap { $0.summary.map { SummarySections.parse($0).decisions } ?? [] }
+            ?? items.flatMap { r in
+                // 一覧で消した・直した決定事項を反映する
+                (r.summary.map { SummarySections.parse($0).decisions } ?? []).compactMap { ledger.resolveDecision($0, recording: r.id, startedAt: r.startedAt) }
+            }
 
         return HomeSummary(day: day, dayLabel: label, items: items,
                            totalMinutes: Int(items.reduce(0) { $0 + $1.duration } / 60),

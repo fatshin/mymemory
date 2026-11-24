@@ -354,7 +354,7 @@ struct DetailView: View {
                 // やることには台帳 (完了・削除・編集) を重ねて見せる。保存している要約の本文はそのまま
                 if let s = rec.summary {
                     Section("要約") {
-                        Text(ledgerStore.ledger.overlay(summary: s, startedAt: rec.startedAt)).textSelection(.enabled)
+                        Text(ledgerStore.ledger.overlay(summary: s, startedAt: rec.startedAt, recording: rec.id)).textSelection(.enabled)
                     }
                 }
                 if let t = rec.transcript {
@@ -471,7 +471,7 @@ extension Recording {
     /// 書き出しには、やること台帳を重ねた要約を使う (完了は [x]、削除は出さない、編集後の文言)。
     @MainActor var exportEntry: ExportEntry {
         ExportEntry(startedAt: startedAt, duration: duration,
-                    summary: summary.map { TodoLedgerStore.shared.ledger.overlay(summary: $0, startedAt: startedAt) },
+                    summary: summary.map { TodoLedgerStore.shared.ledger.overlay(summary: $0, startedAt: startedAt, recording: id) },
                     transcript: transcript)
     }
 }

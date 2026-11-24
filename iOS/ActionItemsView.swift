@@ -2,8 +2,8 @@ import SwiftUI
 import SwiftData
 
 /// 録音ごとの要約から取り出した決定事項と TODO を、日付ごとに並べる (直近 90 日)。
-/// TODO にはやること台帳 (完了・削除・編集) を重ねる。完了した項目は打ち消し線で残し、先頭の「完了」節にも集める。
-/// 項目を押すとその録音の詳細へ移る (遷移先は RootView の navigationDestination)。
+/// やること台帳 (TODO は完了・削除・編集、決定事項は削除・編集) を重ねる。完了した項目は打ち消し線で残し、先頭の「完了」節にも集める。
+/// 項目は 1 行ずつ並べ、押すと編集、スワイプで削除・完了。録音の時刻の行を押すと詳細へ移る (遷移先は RootView の navigationDestination)。
 struct ActionItemsView: View {
     static let days = 90
 
@@ -11,23 +11,24 @@ struct ActionItemsView: View {
     @State private var groups: [DayGroup] = []
     @ObservedObject private var ledgerStore = TodoLedgerStore.shared
     @State private var editing: Todo?
-    @State private var editText = ""
     @State private var undo: TodoUndo?
     @State private var showCompleted = false
     @State private var loaded = false
 
+    /// 一覧の 1 項目 (TODO か決定事項)。original は台帳の鍵にする文言 (決定事項は印付き)。
     struct Todo: Identifiable, Equatable {
         var id: String { original }
         let original: String
         let startedAt: Date
         let display: String
         let completed: Bool
+        var isDecision = false
     }
 
     struct Entry: Identifiable {
         let id: UUID
         let startedAt: Date
-        let decisions: [String]
+        let decisions: [Todo]
         let todos: [Todo]
     }
 
@@ -79,12 +80,44 @@ struct ActionItemsView: View {
             ForEach(groups) { group in
                 Section {
                     ForEach(group.entries) { entry in
+                        // 時刻の行だけが録音の詳細へのリンク。項目の行は押すと編集する
                         NavigationLink(value: entry.id) {
-                            EntryRow(entry: entry,
-                                     onComplete: { t in act(t, "完了しました") { $0.complete(t.original, startedAt: t.startedAt) } },
-                                     onReopen: { t in ledgerStore.perform(t.original) { $0.reopen(t.original, startedAt: t.startedAt) }; undo = nil },
-                                     onEdit: { t in editText = t.display; editing = t },
-                                     onRemove: { t in act(t, "削除しました") { $0.delete(t.original, startedAt: t.startedAt) } })
+                            Label {
+                                Text(entry.startedAt, format: .dateTime.hour().minute())
+                            } icon: {
+                                Image(systemName: "text.bubble")
+                            }
+                            .font(.caption).foregroundStyle(.secondary)
+                        }
+                        .accessibilityHint("元の会話を開きます")
+                        ForEach(entry.decisions + entry.todos) { t in
+                            Button { editing = t } label: { ItemRow(item: t).contentShape(.rect) }
+                                .buttonStyle(.plain)
+                                .accessibilityHint("編集します")
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button(role: .destructive) { remove(t) } label: { Label("削除", systemImage: "trash") }
+                                    Button { editing = t } label: { Label("編集", systemImage: "pencil") }.tint(.blue)
+                                }
+                                .swipeActions(edge: .leading) {
+                                    if !t.isDecision {
+                                        if t.completed {
+                                            Button { reopen(t) } label: { Label("未完了に戻す", systemImage: "arrow.uturn.backward") }
+                                        } else {
+                                            Button { complete(t) } label: { Label("完了", systemImage: "checkmark") }.tint(.green)
+                                        }
+                                    }
+                                }
+                                .contextMenu {
+                                    if !t.isDecision {
+                                        if t.completed {
+                                            Button { reopen(t) } label: { Label("未完了に戻す", systemImage: "arrow.uturn.backward") }
+                                        } else {
+                                            Button { complete(t) } label: { Label("完了", systemImage: "checkmark.circle") }
+                                        }
+                                    }
+                                    Button { editing = t } label: { Label("編集", systemImage: "pencil") }
+                                    Button(role: .destructive) { remove(t) } label: { Label("削除", systemImage: "trash") }
+                                }
                         }
                     }
                 } header: {
@@ -101,24 +134,32 @@ struct ActionItemsView: View {
         }
         .overlay(alignment: .bottom) { UndoBanner(undo: $undo) }
         .navigationTitle("決定事項・TODO")
-        .alert("やることを編集", isPresented: Binding(get: { editing != nil }, set: { if !$0 { editing = nil } })) {
-            TextField("やること", text: $editText, axis: .vertical)
-            Button("保存") {
-                if let t = editing {
-                    ledgerStore.perform(t.original) { $0.edit(t.original, startedAt: t.startedAt, to: editText) }
-                    undo = nil  // 編集の後に古い「元に戻す」を押して編集まで消さない
-                }
-                editing = nil
-            }
-            Button("キャンセル", role: .cancel) { editing = nil }
-        } message: {
-            Text("空にして保存すると削除します")
+        .sheet(item: $editing) { t in
+            ItemEditSheet(item: t,
+                          onSave: { text in
+                              editing = nil
+                              // 空にしたら削除 (元に戻せるよう、削除と同じ扱いにする)
+                              if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { remove(t); return }
+                              ledgerStore.perform(t.original) { $0.edit(t.original, startedAt: t.startedAt, to: text) }
+                              undo = nil  // 編集の後に古い「元に戻す」を押して編集まで消さない
+                          },
+                          onComplete: { editing = nil; complete(t) },
+                          onReopen: { editing = nil; reopen(t) },
+                          onDelete: { editing = nil; remove(t) })
+                .presentationDetents([.medium, .large])
         }
         // 解析は表示時と、要約や台帳が変わったときだけ行い、再描画のたびには行わない
         .task(id: changeKey) {
             groups = Self.group(recordings, ledger: ledgerStore.ledger)
             loaded = true
         }
+    }
+
+    private func complete(_ t: Todo) { act(t, "完了しました") { $0.complete(t.original, startedAt: t.startedAt) } }
+    private func remove(_ t: Todo) { act(t, "削除しました") { $0.delete(t.original, startedAt: t.startedAt) } }
+    private func reopen(_ t: Todo) {
+        ledgerStore.perform(t.original) { $0.reopen(t.original, startedAt: t.startedAt) }
+        undo = nil
     }
 
     private func act(_ t: Todo, _ message: String, _ change: (inout TodoLedger) -> Void) {
@@ -152,46 +193,87 @@ struct ActionItemsView: View {
                 case .deleted: return nil
                 }
             }
-            guard !items.decisions.isEmpty || !todos.isEmpty else { return nil }
-            return Entry(id: rec.id, startedAt: rec.startedAt, decisions: items.decisions, todos: todos)
+            // 決定事項は録音ごとに出し、削除・編集もその録音の項目にだけ効かせる。消したものは出さない
+            var seenDecisions = Set<String>()  // 同じ録音で同じ文言が 2 回出たら 1 つにする (行の識別子を重ねない)
+            let decisions = items.decisions.compactMap { d -> Todo? in
+                guard seenDecisions.insert(TodoLedger.key(d)).inserted,
+                      let shown = ledger.resolveDecision(d, recording: rec.id, startedAt: rec.startedAt) else { return nil }
+                return Todo(original: TodoLedger.decisionOriginal(d, recording: rec.id), startedAt: rec.startedAt, display: shown,
+                            completed: false, isDecision: true)
+            }
+            guard !decisions.isEmpty || !todos.isEmpty else { return nil }
+            return Entry(id: rec.id, startedAt: rec.startedAt, decisions: decisions, todos: todos)
         }
         let byDay = Dictionary(grouping: entries) { calendar.startOfDay(for: $0.startedAt) }
         return byDay.keys.sorted(by: >).map { DayGroup(day: $0, entries: byDay[$0] ?? []) }
     }
 }
 
-private struct EntryRow: View {
-    let entry: ActionItemsView.Entry
-    var onComplete: (ActionItemsView.Todo) -> Void
-    var onReopen: (ActionItemsView.Todo) -> Void
-    var onEdit: (ActionItemsView.Todo) -> Void
-    var onRemove: (ActionItemsView.Todo) -> Void
+private struct ItemRow: View {
+    let item: ActionItemsView.Todo
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(entry.startedAt, format: .dateTime.hour().minute()).font(.caption).foregroundStyle(.secondary)
-            ForEach(Array(entry.decisions.enumerated()), id: \.offset) { _, d in
-                Label(d, systemImage: "checkmark.seal").font(.subheadline)
+        HStack(alignment: .firstTextBaseline) {
+            Label {
+                Text(item.display).strikethrough(item.completed).foregroundStyle(item.completed ? .secondary : .primary)
+            } icon: {
+                Image(systemName: item.isDecision ? "checkmark.seal" : (item.completed ? "checkmark.circle.fill" : "circle"))
             }
-            ForEach(entry.todos) { t in
-                Label {
-                    Text(t.display).strikethrough(t.completed).foregroundStyle(t.completed ? .secondary : .primary)
-                } icon: {
-                    Image(systemName: t.completed ? "checkmark.circle.fill" : "circle")
-                }
-                .font(.subheadline)
-                // 長押しで完了・編集・削除 (行を押すと録音の詳細へ移る)
-                .contextMenu {
-                    if t.completed {
-                        Button { onReopen(t) } label: { Label("未完了に戻す", systemImage: "arrow.uturn.backward") }
-                    } else {
-                        Button { onComplete(t) } label: { Label("完了", systemImage: "checkmark.circle") }
-                    }
-                    Button { onEdit(t) } label: { Label("編集", systemImage: "pencil") }
-                    Button(role: .destructive) { onRemove(t) } label: { Label("削除", systemImage: "trash") }
-                }
-            }
+            .font(.subheadline)
+            Spacer(minLength: 4)
+            Image(systemName: "pencil").font(.caption).foregroundStyle(.tertiary).accessibilityHidden(true)
         }
         .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel((item.isDecision ? "決定事項 " : (item.completed ? "完了した TODO " : "TODO ")) + item.display)
+    }
+}
+
+/// 一覧の項目の編集画面。文言を直して保存するほか、完了 (TODO だけ)・削除をここから選べる。
+private struct ItemEditSheet: View {
+    let item: ActionItemsView.Todo
+    @State private var text: String
+    var onSave: (String) -> Void
+    var onComplete: () -> Void
+    var onReopen: () -> Void
+    var onDelete: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    init(item: ActionItemsView.Todo, onSave: @escaping (String) -> Void, onComplete: @escaping () -> Void,
+         onReopen: @escaping () -> Void, onDelete: @escaping () -> Void) {
+        self.item = item
+        _text = State(initialValue: item.display)
+        self.onSave = onSave; self.onComplete = onComplete; self.onReopen = onReopen; self.onDelete = onDelete
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField(item.isDecision ? "決定事項" : "やること", text: $text, axis: .vertical)
+                        .lineLimit(2...8)
+                } footer: {
+                    Text("空にして保存すると削除します。元の要約の文言は変えず、表示と書き出しに反映します。")
+                }
+                Section {
+                    if !item.isDecision {
+                        if item.completed {
+                            Button { onReopen() } label: { Label("未完了に戻す", systemImage: "arrow.uturn.backward") }
+                        } else {
+                            Button { onComplete() } label: { Label("完了にする", systemImage: "checkmark.circle") }
+                        }
+                    }
+                    Button(role: .destructive) { onDelete() } label: { Label("削除", systemImage: "trash") }
+                } footer: {
+                    Text(item.startedAt, format: .dateTime.month().day().hour().minute())
+                }
+            }
+            .navigationTitle(item.isDecision ? "決定事項を編集" : "やることを編集")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("キャンセル") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button("保存") { onSave(text) }.bold() }
+            }
+        }
     }
 }

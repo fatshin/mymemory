@@ -110,6 +110,30 @@ final class TodoLedgerTests: XCTestCase {
         XCTAssertEqual(SummarySections.parse(out).todos, ["[x] A を送る", "C を2つ買う"])
         XCTAssertEqual(SummarySections.parse(out).decisions, ["決めた"])
     }
+
+    /// 決定事項も削除・編集でき、同じ文言の TODO とは別の項目として扱う (TODO を消しても決定事項は残る)。
+    func testDecisionsAreDeletedAndEditedSeparatelyFromTodos() {
+        let r1 = UUID(), r2 = UUID()
+        var l = TodoLedger()
+        l.delete(TodoLedger.decisionOriginal("A を送る", recording: r1), startedAt: at(0), now: at(1))
+        l.edit(TodoLedger.decisionOriginal("会場は本社", recording: r1), startedAt: at(0), to: "会場は本社 3 階", now: at(1))
+        let summary = "【決定事項】\n- A を送る\n- 会場は本社\n- 予算は据え置き\n【TODO】\n- A を送る"
+        let out = l.overlay(summary: summary, startedAt: at(0), recording: r1)
+        XCTAssertEqual(SummarySections.parse(out).decisions, ["会場は本社 3 階", "予算は据え置き"])
+        XCTAssertEqual(SummarySections.parse(out).todos, ["A を送る"])
+        XCTAssertNil(l.resolveDecision("A を送る", recording: r1, startedAt: at(0)))
+        XCTAssertEqual(l.resolveDecision("予算は据え置き", recording: r1, startedAt: at(0)), "予算は据え置き")
+        // 別の録音の同じ文言の決定事項には効かない (同じ日の前の会議の決定を消さない)
+        XCTAssertEqual(l.resolveDecision("A を送る", recording: r2, startedAt: at(-0.5)), "A を送る")
+        // 録音が分からない重ね合わせでは決定事項を変えない
+        XCTAssertEqual(SummarySections.parse(l.overlay(summary: summary, startedAt: at(0))).decisions, ["A を送る", "会場は本社", "予算は据え置き"])
+        // 決定事項をすべて消しても見出しは残り「なし」になる
+        l.delete(TodoLedger.decisionOriginal("会場は本社", recording: r1), startedAt: at(0), now: at(2))
+        l.delete(TodoLedger.decisionOriginal("予算は据え置き", recording: r1), startedAt: at(0), now: at(2))
+        XCTAssertTrue(l.overlay(summary: summary, startedAt: at(0), recording: r1).contains("【決定事項】\n- なし"))
+        // 決定事項は完了の一覧に出ない
+        XCTAssertTrue(l.completed.isEmpty)
+    }
 }
 
 final class TodoLedgerPurgeScopeTests: XCTestCase {
