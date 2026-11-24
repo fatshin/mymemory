@@ -530,6 +530,10 @@ struct SettingsView: View {
                     if preference == .remote, !(remoteAllowed && hasSavedKey) {
                         Text("APIキーを保存し、下の送信を許可するまでは端末内で要約します").font(.footnote).foregroundStyle(.orange)
                     }
+                    // 見つけやすいよう、要約の設定の中に置く
+                    NavigationLink { PromptLabView() } label: {
+                        Label("プロンプトを編集 (要約・振り返りの指示)", systemImage: "text.badge.star")
+                    }
                 } header: {
                     Text("要約")
                 } footer: {
@@ -579,9 +583,6 @@ struct SettingsView: View {
                     Text("録音と文字起こしはこの端末内に保存します。自動削除で消すのは文字起こし済みの音声だけで、文字起こしと要約は残ります。録音は詳細画面のメニューから個別に削除できます。")
                 }
                 Section {
-                    NavigationLink { PromptLabView() } label: {
-                        Label("要約・振り返りの指示を編集・比べる", systemImage: "text.badge.star")
-                    }
                     Link("プライバシーポリシー", destination: AppLinks.privacy)
                 }
             }
