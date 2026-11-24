@@ -11,6 +11,13 @@ struct AudioLevel: Equatable, Sendable {
 
     /// 100ms の RMS がこれを超えれば、声 (または何かの音) がある区間とみなす。静かな場所の小声を捨てないよう低めにとる。
     static let voicedThresholdDBFS: Float = -50
+    /// 録音全体が小さい (Watch が袖の下・離れた所にある) ときは、周りの雑音より `aboveFloorDB` 大きい区間も声とみなす。
+    /// 雑音の大きさは 100ms ごとの RMS の下から `floorQuantile` の位置。これより小さい区間は声とみなさない (`minVoicedDBFS`)。
+    static let aboveFloorDB: Float = 10
+    static let floorQuantile = 0.2
+    static let minVoicedDBFS: Float = -65
+    /// 雑音との差だけで声とみなすのは、この数以上続いた窓だけ (衣擦れ・足音・ドアのような一瞬の音を声と数えない)。
+    static let minRelativeRun = 3
     /// 声らしい時間がこれ未満なら無音とみなし、文字起こしをしない
     /// (WhisperKit 0.18.0 は「発話なし」の確率を計算せず常に 0 のため、無音から定型文を作る。電力も使わない)。
     static let minVoicedSeconds: TimeInterval = 1.0
@@ -19,15 +26,36 @@ struct AudioLevel: Equatable, Sendable {
 
     static func dbfs(peak: Float) -> Float { peak > 0 ? max(-120, 20 * log10(peak)) : -120 }
 
+    /// 声らしい区間の数。窓ごとの RMS (dBFS) を受け取り、固定の閾値か、雑音より十分大きい区間を数える。
+    static func voicedWindows(_ rmsDB: [Float]) -> Int {
+        guard !rmsDB.isEmpty else { return 0 }
+        let floor = rmsDB.sorted()[min(rmsDB.count - 1, Int(Double(rmsDB.count) * floorQuantile))]
+        let relative = max(minVoicedDBFS, floor + aboveFloorDB)
+        var count = 0, run = 0
+        for v in rmsDB + [-Float.infinity] {  // 末尾の番兵で最後の連続を締める
+            if v > voicedThresholdDBFS {
+                count += 1
+                if run >= minRelativeRun { count += run }
+                run = 0
+            } else if v > relative {
+                run += 1
+            } else {
+                if run >= minRelativeRun { count += run }
+                run = 0
+            }
+        }
+        return count
+    }
+
     /// ファイルを 100ms ずつ読んで、最大振幅と声らしい時間を求める。読めなければ nil。
     static func measure(_ url: URL) -> AudioLevel? {
         guard let f = try? AVAudioFile(forReading: url) else { return nil }
         let format = f.processingFormat
         let window = AVAudioFrameCount(max(1, format.sampleRate / 10))
         guard format.sampleRate > 0, let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: window) else { return nil }
-        let voicedRMS = pow(10, voicedThresholdDBFS / 20)
         var peak: Float = 0
-        var voicedFrames = 0
+        var rmsDB: [Float] = []
+        var frames: [Int] = []
         while f.framePosition < f.length {
             do { try f.read(into: buf, frameCount: window) } catch { break }
             let n = Int(buf.frameLength)
@@ -35,10 +63,14 @@ struct AudioLevel: Equatable, Sendable {
             let p = data[0]  // 録音はモノラル。複数チャンネルでも先頭で判定する
             var sum: Float = 0
             for i in 0..<n { let v = p[i]; peak = max(peak, abs(v)); sum += v * v }
-            if (sum / Float(n)).squareRoot() > voicedRMS { voicedFrames += n }
+            rmsDB.append(dbfs(peak: (sum / Float(n)).squareRoot()))
+            frames.append(n)
         }
+        // 窓はほぼ同じ長さ (最後だけ短い) のため、声らしい窓の数に窓の長さを掛けて秒にする
+        let voiced = voicedWindows(rmsDB)
+        let perWindow = frames.isEmpty ? 0 : Double(frames.reduce(0, +)) / Double(frames.count)
         return AudioLevel(duration: Double(f.length) / format.sampleRate, peakDBFS: dbfs(peak: peak),
-                          voicedSeconds: Double(voicedFrames) / format.sampleRate)
+                          voicedSeconds: Double(voiced) * perWindow / format.sampleRate)
     }
 }
 

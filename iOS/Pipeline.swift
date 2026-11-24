@@ -147,15 +147,20 @@ final class Pipeline: NSObject, ObservableObject {
         }
     }
 
-    /// 小さい声を持ち上げる前に「言葉として認識できなかった」録音を、一度だけ文字起こし待ちに戻す。
-    /// 無音と判定した録音は判定が変わらないため戻さない (詳細画面の「再文字起こし」で個別にやり直せる)。
+    /// 小さい声の扱いを変える前に「言葉として認識できなかった」「無音と判定した」録音を、一度だけ文字起こし待ちに戻す
+    /// (声を持ち上げてから Whisper へ渡し、無音の判定は周りの雑音との差でも行うようにしたため)。
+    /// 新しい判定でも無音なら、Whisper を呼ばずにすぐ終わる。
     private func requeueUnrecognizedOnce() {
-        let key = "requeuedUnrecognizedAfterGainV1"
+        let key = "requeuedQuietAfterRelativeGateV2"
         guard !UserDefaults.standard.bool(forKey: key) else { return }
+        // 前の版 (V1) で戻した「認識できなかった」録音は、無音の判定の変更では結果が変わらないため戻さない
+        let retriedUnrecognized = UserDefaults.standard.bool(forKey: "requeuedUnrecognizedAfterGainV1")
         let desc = FetchDescriptor<Recording>(predicate: #Predicate { $0.statusRaw == "done" && $0.summary == nil })
         guard let recs = try? context.fetch(desc) else { return }  // 読めなければ次の起動でやり直す
         for rec in recs {
-            guard (rec.transcript ?? "").isEmpty, rec.errorMessage?.hasPrefix("音声を言葉として認識できませんでした") == true,
+            let msg = rec.errorMessage ?? ""
+            guard (rec.transcript ?? "").isEmpty,
+                  msg.hasPrefix("無音と判定したため") || (!retriedUnrecognized && msg.hasPrefix("音声を言葉として認識できませんでした")),
                   FileManager.default.fileExists(atPath: rec.fileURL.path) else { continue }
             rec.statusRaw = "pending"; rec.errorMessage = nil; rec.attempts = 0
         }

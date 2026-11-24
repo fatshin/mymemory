@@ -102,4 +102,42 @@ final class TranscriptCleanerTests: XCTestCase {
         XCTAssertEqual(TranscriptCleaner.clean([.init(text: "以上で終わります。")]), "")
         XCTAssertEqual(TranscriptCleaner.clean([.init(text: "今日の議題は以上で終わりますか")]), "今日の議題は以上で終わりますか")
     }
+
+    /// 録音全体が小さくても、周りの雑音より 10 dB 以上大きい区間は声とみなす (袖の下の Watch で録った会話を捨てない)。
+    func testQuietSpeechAboveNoiseFloorIsVoiced() {
+        // 雑音 -72 dBFS が 9 分半、小さい声 -56 dBFS が 30 秒 (100ms 窓で 300 個)
+        let windows = [Float](repeating: -72, count: 5_700) + [Float](repeating: -56, count: 300)
+        XCTAssertEqual(AudioLevel.voicedWindows(windows), 300)
+    }
+
+    /// 雑音だけの録音は、多少の揺れがあっても声とみなさない。
+    func testSteadyNoiseIsNotVoiced() {
+        let windows = (0..<6_000).map { Float(-70 + ($0 % 7)) }  // -70〜-64 dBFS の揺れ
+        XCTAssertEqual(AudioLevel.voicedWindows(windows), 0)
+    }
+
+    /// とても小さい区間 (-65 dBFS 以下) は、雑音より大きくても声とみなさない。完全な無音・空も 0。
+    func testVeryFaintIsNotVoiced() {
+        let windows = [Float](repeating: -120, count: 5_000) + [Float](repeating: -80, count: 1_000)
+        XCTAssertEqual(AudioLevel.voicedWindows(windows), 0)
+        XCTAssertEqual(AudioLevel.voicedWindows([]), 0)
+    }
+
+    /// 一定の大きな音 (雑音の基準と同じ大きさ) は、固定の閾値で声とみなす。
+    func testLoudSteadySoundIsVoiced() {
+        XCTAssertEqual(AudioLevel.voicedWindows([Float](repeating: -20, count: 50)), 50)
+    }
+
+    /// 雑音の中の一瞬の音 (0.2 秒以下の衣擦れ・足音) は、いくつあっても声と数えない。0.3 秒以上続けば数える。
+    func testIsolatedBumpsAreNotVoiced() {
+        var windows = [Float](repeating: -72, count: 6_000)
+        for start in stride(from: 100, to: 5_900, by: 50) { windows[start] = -55; windows[start + 1] = -55 }
+        XCTAssertEqual(AudioLevel.voicedWindows(windows), 0)
+        windows[3_000] = -55; windows[3_001] = -55; windows[3_002] = -55
+        XCTAssertEqual(AudioLevel.voicedWindows(windows), 3)
+        // 録音の終わりまで続く声も数える
+        var tail = [Float](repeating: -72, count: 100)
+        tail += [Float](repeating: -56, count: 5)
+        XCTAssertEqual(AudioLevel.voicedWindows(tail), 5)
+    }
 }
