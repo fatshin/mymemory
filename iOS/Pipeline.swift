@@ -27,9 +27,39 @@ final class Pipeline: NSObject, ObservableObject {
     nonisolated private static let modelFolderKey = "modelFolderRelative"
     /// コンテナのパスはアプリ更新で変わりうるため、Documents からの相対パスで保存する。
     nonisolated static func savedModelFolder() -> String? {
-        guard let rel = UserDefaults.standard.string(forKey: modelFolderKey) else { return nil }
-        let path = URL.documentsDirectory.appending(path: rel).path
-        return FileManager.default.fileExists(atPath: path) ? path : nil
+        if let rel = UserDefaults.standard.string(forKey: modelFolderKey) {
+            let path = URL.documentsDirectory.appending(path: rel).path
+            if isModelFolder(path) { return path }
+        }
+        // 場所を覚えていなくても (記録の失敗・パスの表記揺れ)、取得済みのモデルがあれば使い、場所を覚え直す
+        // (覚えていないと、起動のたびに取得処理から始めてしまう)
+        guard let found = downloadedModelFolder() else { return nil }
+        rememberModelFolder(URL(fileURLWithPath: found))
+        return found
+    }
+
+    /// WhisperKit が既定で取得する場所 (Documents/huggingface/models/argmaxinc/whisperkit-coreml/<モデル名>) を探す。
+    nonisolated static func downloadedModelFolder() -> String? {
+        let repo = URL.documentsDirectory.appending(path: "huggingface/models/argmaxinc/whisperkit-coreml")
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: repo.path) else { return nil }
+        return names.filter { $0.hasSuffix(modelName) }.map { repo.appending(path: $0).path }.first(where: isModelFolder)
+    }
+
+    /// 取得が途中で止まったフォルダは使わない (重いエンコーダとデコーダが揃っているときだけ)。
+    nonisolated static func isModelFolder(_ path: String) -> Bool {
+        ["AudioEncoder", "TextDecoder"].allSatisfy { name in
+            ["mlmodelc", "mlpackage"].contains {
+                FileManager.default.fileExists(atPath: (path as NSString).appendingPathComponent("\(name).\($0)"))
+            }
+        }
+    }
+
+    /// 取得・ロードできたモデルの場所を、Documents からの相対パスで覚える (/private の有無などの表記の違いをならす)。
+    nonisolated static func rememberModelFolder(_ folder: URL) {
+        let docs = URL.documentsDirectory.resolvingSymlinksInPath().path
+        let path = folder.resolvingSymlinksInPath().path
+        guard path.hasPrefix(docs + "/") else { return }
+        UserDefaults.standard.set(String(path.dropFirst(docs.count)), forKey: modelFolderKey)
     }
     private var modelOnDisk: Bool { Self.savedModelFolder() != nil }
     /// モデル取得失敗の連続回数。上限で自動再試行を止め、通知のたびの再ダウンロードを防ぐ。
@@ -72,7 +102,7 @@ final class Pipeline: NSObject, ObservableObject {
     private var foregroundRun: Bool { foregroundActive && !ProcessInfo.processInfo.isLowPowerModeEnabled }
 
     /// 日本語向け。モデル名はWhisperKit側の対応表に依存 (要確認)。
-    static let modelName = "large-v3-v20240930_626MB"
+    nonisolated static let modelName = "large-v3-v20240930_626MB"
 
     init(context: ModelContext) {
         self.context = context
@@ -394,7 +424,11 @@ final class Pipeline: NSObject, ObservableObject {
             rec.attempts += 1
             try? context.save()
             do {
-                if !modelLoaded { modelStatus = "モデルDL/ロード中…" }
+                if !modelLoaded {
+                    // 取得済みなら読み込むだけ (アプリの更新直後は端末向けの準備で数分かかることがある)
+                    modelStatus = modelOnDisk ? "文字起こしモデルを読み込み中… (通信なし)"
+                                              : "文字起こしモデルをダウンロード中… (初回のみ・約630MB)"
+                }
                 currentFileSeconds = rec.duration > 0 ? rec.duration : Self.audioDuration(rec.fileURL)
                 reportProgress()
                 // 進捗の更新は軽く保つ (ウィンドウが変わったときだけ MainActor へ戻す)
@@ -698,12 +732,7 @@ final class Transcriber: @unchecked Sendable {
                         model: Pipeline.modelName, computeOptions: Self.computeOptions))
                 }
                 try await created.loadModels()
-                if let folder = created.modelFolder {
-                    let docs = URL.documentsDirectory.path
-                    if folder.path.hasPrefix(docs) {
-                        UserDefaults.standard.set(String(folder.path.dropFirst(docs.count)), forKey: "modelFolderRelative")
-                    }
-                }
+                if let folder = created.modelFolder { Pipeline.rememberModelFolder(folder) }
                 w = created
             } catch {
                 throw ModelLoadError(underlying: error.localizedDescription)
