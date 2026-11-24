@@ -106,7 +106,10 @@ final class Pipeline: NSObject, ObservableObject {
     /// 前面に来たら、保留の文字起こしと要約の無い録音の処理を始める。
     func setForeground(_ active: Bool) {
         foregroundActive = active
-        guard active else { return }
+        guard active else {
+            if queue.isEmpty { scheduleIfSummariesPending() }
+            return
+        }
         // 前回の電池不足などの注意は、開き直したら判定し直す
         if !userRun.isActive { continuedNote = nil }
         if !queue.isEmpty, canTranscribeNow(userInitiated: foregroundRun) {
@@ -375,6 +378,7 @@ final class Pipeline: NSObject, ObservableObject {
         let task = startDrain()
         handle.setExpirationHandler { [weak self] in
             task.cancel()
+            handle.markExpired()
             Task { @MainActor in
                 self?.userRun.clear()
                 BackgroundTranscribe.schedule(needsNetwork: !(self?.modelOnDisk ?? false))
@@ -387,15 +391,27 @@ final class Pipeline: NSObject, ObservableObject {
         }
         Task { @MainActor in
             await task.value
+            // 文字起こしが済んだら、同じ継続タスクの中で要約も進める (画面を閉じていても続く)。
+            // 進捗は 1 件ごとに送る (送らないと OS に止まったとみなされる)
+            var summarized = true
+            if !task.isCancelled, queue.isEmpty, progressSink === handle.progress, let sink = handle.progress {
+                let base = sink.completedUnitCount
+                summarized = await summarizeInTask(cancelledBy: handle) { done, total in
+                    if done == 0 { handle.updateTitle("要約", subtitle: "\(total)件の録音を要約しています") }
+                    sink.totalUnitCount = max(sink.totalUnitCount, base + Int64(total) * Self.summaryProgressUnits, 1)
+                    sink.completedUnitCount = base + Int64(done) * Self.summaryProgressUnits
+                }
+            }
             // 後続の継続タスクが設定した進捗先を消さない
             if progressSink === handle.progress {
                 progressSink = nil
                 continuedRequestedAt = nil
             }
-            let finished = !task.isCancelled && queue.isEmpty
+            let finished = !task.isCancelled && queue.isEmpty && summarized
             handle.complete(success: finished)
-            // 継続タスクの中では要約しないため、終わってから始める (前面にいるときだけ動く)
+            // 要約が途中で止まった・背景で要約できない分 (端末内モデルで非充電) は、前面か充電中に回す
             startSummaryBacklog()
+            scheduleIfSummariesPending()
             // 中止・失効で止まった場合も、保留があれば通常の電力判定をやり直し、状態表示とボタンを更新する
             if !queue.isEmpty { startDrain() }
         }
@@ -425,6 +441,7 @@ final class Pipeline: NSObject, ObservableObject {
         handle.setExpirationHandler { [weak self] in
             // 継続タスクが実際に同じ drain を進めている間だけ、処理タスクの失効で取り消さない
             // (「今すぐ」を押しても継続タスクが始まっていなければ、失効時に取り消して pending に戻す)
+            handle.markExpired()
             Task { @MainActor in
                 if self?.activeProcessing === handle { self?.activeProcessing = nil }
                 if self?.progressSink == nil { task.cancel() }
@@ -438,8 +455,14 @@ final class Pipeline: NSObject, ObservableObject {
         }
         Task { @MainActor in
             await task.value
+            // 充電中の処理タスクでは、文字起こしの後に要約もまとめて行う (端末内モデルも使える)
+            var summarized = true
+            if !task.isCancelled, queue.isEmpty, activeProcessing === handle {
+                summarized = await summarizeInTask(cancelledBy: handle)
+            }
             if activeProcessing === handle { activeProcessing = nil }
-            handle.complete(success: !task.isCancelled)
+            handle.complete(success: !task.isCancelled && summarized)
+            if !summarized { scheduleIfSummariesPending() }
         }
     }
 
@@ -583,8 +606,8 @@ final class Pipeline: NSObject, ObservableObject {
         if !Task.isCancelled { await proofreadBacklog() }
     }
 
-    /// 前面にいるときだけ始める。背景タスクは drain が終わると OS に完了を伝えるため、その後の通信は途中で止められ、
-    /// 失敗として数えられて自動要約の対象から外れてしまう。背景で済んだ録音は、次に開いたときに要約する。
+    /// 前面にいるときだけ始める。背景では、継続タスク・充電中の処理タスクが完了を伝える前に `summarizeInTask` で行う
+    /// (完了を伝えた後の通信は途中で止められ、失敗として数えられて自動要約の対象から外れてしまうため)。
     func startSummaryBacklog() {
         guard summaryTask == nil, drainTask == nil, progressSink == nil, UIApplication.shared.applicationState == .active else { return }
         let token = UUID()
@@ -653,11 +676,14 @@ final class Pipeline: NSObject, ObservableObject {
     /// 文字起こし済みで要約の無い録音を、新しい順に要約して保存する (最初の画面とやることの一覧に使う)。
     /// 外部 API は利用者が送信を許可したときだけ (Summarizer が経路を決める)。端末内モデルは電力を使うため、充電中か、アプリを開いているあいだ (残量 20% 以上) だけ。
     /// 画面を閉じても続く継続タスクの中では行わない (進捗を送れず、OS に止められるのを避ける)。
-    private func summarizeBacklog() async {
-        guard progressSink == nil else { return }
-        if let last = lastAutoSummaryRun, Date().timeIntervalSince(last) < Self.autoSummaryInterval { return }
+    /// - Parameters:
+    ///   - fromTask: 背景タスクの中から呼ぶ。開始の間隔を空けない (OS が起こした機会を逃さない)。
+    ///   - progress: (済んだ件数, 対象の件数)。継続タスクへ進捗を送るために使う。
+    private func summarizeBacklog(fromTask: Bool = false, progress: ((Int, Int) -> Void)? = nil) async {
+        guard fromTask || progressSink == nil else { return }
+        if !fromTask, let last = lastAutoSummaryRun, Date().timeIntervalSince(last) < Self.autoSummaryInterval { return }
         guard let firstRoute = try? Summarizer.currentRoute(), autoSummaryPowerOK(firstRoute) else { return }
-        lastAutoSummaryRun = Date()
+        if !fromTask { lastAutoSummaryRun = Date() }  // 背景で済ませた直後に開いても、前面の要約を間隔で飛ばさない
         var d = FetchDescriptor<Recording>(
             predicate: #Predicate { $0.statusRaw == "done" && $0.summary == nil && $0.transcript != nil && $0.transcript != "" },
             sortBy: [SortDescriptor(\.startedAt, order: .reverse)])
@@ -665,6 +691,8 @@ final class Pipeline: NSObject, ObservableObject {
         guard let recs = try? context.fetch(d) else { return }
         let targets = recs.filter { (autoSummaryFailures[$0.id] ?? 0) < Self.autoSummaryMaxFailures }
         guard !targets.isEmpty else { return }
+        progress?(0, targets.count)
+        defer { progress?(targets.count, targets.count) }
         // 中断・取り消しでも「要約を作成中」の表示を残さない (「充電待ち」などの表示に戻す)
         let statusBefore = modelStatus
         // 取り消された古い要約は表示に触れない (文字起こしの表示を上書きしない)
@@ -674,6 +702,7 @@ final class Pipeline: NSObject, ObservableObject {
         awaitingReview = awaitingReview.filter { ids.contains($0.key) }
         var consecutiveFailures = 0, consecutiveBusy = 0
         for (i, rec) in targets.enumerated() {
+            if i > 0 { progress?(i, targets.count) }
             if Task.isCancelled || !rec.isAlive { continue }
             // 端末内モデルが混み続けるときは、残りを次の機会に回す
             if consecutiveBusy >= 3 { return }
@@ -724,6 +753,36 @@ final class Pipeline: NSObject, ObservableObject {
                 if consecutiveFailures >= 2 { return }
             }
         }
+    }
+
+    /// 継続タスクの進捗で、要約 1 件を何単位に数えるか (文字起こしは音声 1 秒が 1 単位)。
+    static let summaryProgressUnits: Int64 = 60
+
+    /// 背景タスクの中で要約を行い、終わるまで待つ。前面で動いていた要約は止めて引き継ぐ
+    /// (待つだけだと進捗を送れず、時間切れでも止められないため。二重には要約しない)。
+    /// 電力の条件は前面と同じ (`autoSummaryPowerOK`): 端末内モデルは充電中だけ、外部 API は電源を問わない。
+    /// - Returns: 失効せずに最後まで進んだか。
+    private func summarizeInTask(cancelledBy handle: TaskHandle, progress: ((Int, Int) -> Void)? = nil) async -> Bool {
+        stopSummaryBacklog()
+        let token = UUID()
+        summaryToken = token
+        let task = Task { @MainActor [self] in await summarizeBacklog(fromTask: true, progress: progress) }
+        summaryTask = task
+        handle.onExpire { task.cancel() }
+        await task.value
+        if summaryToken == token { summaryTask = nil }
+        return !handle.isExpired && !task.isCancelled
+    }
+
+    /// 要約の無い録音が残っていれば、充電中に OS が起こす処理タスクを申請しておく。
+    private func scheduleIfSummariesPending() {
+        // 文字起こしが残っているあいだは drain の申請 (通信の要否) を上書きしない
+        guard queue.isEmpty, let route = try? Summarizer.currentRoute() else { return }
+        var d = FetchDescriptor<Recording>(
+            predicate: #Predicate { $0.statusRaw == "done" && $0.summary == nil && $0.transcript != nil && $0.transcript != "" })
+        d.fetchLimit = 1
+        guard let n = try? context.fetchCount(d), n > 0 else { return }
+        BackgroundTranscribe.schedule(needsNetwork: !modelOnDisk || route == .remote)
     }
 
     /// 端末内モデルは充電中か、アプリを開いているあいだ (残量 20% 以上・低電力モードでない) だけ。外部 API は端末の負荷が小さいので電源を問わない (送信の許可は経路の判定で確認済み)。

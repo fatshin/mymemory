@@ -65,6 +65,8 @@ final class TaskHandle: @unchecked Sendable {
     let progress: Progress?
     private let lock = NSLock()
     private var completed = false
+    private var expired = false
+    private var expireHandlers: [@Sendable () -> Void] = []
 
     init(_ task: BGTask, progress: Progress? = nil) {
         self.task = task
@@ -73,6 +75,36 @@ final class TaskHandle: @unchecked Sendable {
 
     func setExpirationHandler(_ handler: @escaping @Sendable () -> Void) {
         task.expirationHandler = handler
+    }
+
+    /// OS が時間切れを伝えたか。
+    var isExpired: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return expired
+    }
+
+    /// 時間切れのときに追加で止める処理を登録する。既に時間切れなら即座に呼ぶ。
+    func onExpire(_ handler: @escaping @Sendable () -> Void) {
+        lock.lock()
+        let already = expired
+        if !already { expireHandlers.append(handler) }
+        lock.unlock()
+        if already { handler() }
+    }
+
+    /// 時間切れの処理 (expirationHandler) の中で呼ぶ。登録された停止処理を 1 回だけ呼ぶ。
+    func markExpired() {
+        lock.lock()
+        let handlers = expired ? [] : expireHandlers
+        expired = true
+        expireHandlers = []
+        lock.unlock()
+        handlers.forEach { $0() }
+    }
+
+    /// 継続タスクのときだけ、利用者に見える表示 (Live Activity) を変える。
+    func updateTitle(_ title: String, subtitle: String) {
+        (task as? BGContinuedProcessingTask)?.updateTitle(title, subtitle: subtitle)
     }
 
     func complete(success: Bool) {
