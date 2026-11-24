@@ -580,7 +580,7 @@ struct SettingsView: View {
                 }
                 Section {
                     NavigationLink { PromptLabView() } label: {
-                        Label("要約の指示をカスタマイズ・比べる", systemImage: "text.badge.star")
+                        Label("要約・振り返りの指示を編集・比べる", systemImage: "text.badge.star")
                     }
                     Link("プライバシーポリシー", destination: AppLinks.privacy)
                 }
@@ -681,11 +681,14 @@ struct DayReflectionView: View {
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var ledgerStore = TodoLedgerStore.shared
 
-    /// 振り返りの【TODO】は言い回しが変わり台帳と照合できないため、その日の録音のやること (台帳適用後) に差し替える。
+    /// 振り返りの【決定事項】【TODO】は言い回しが変わり台帳と照合できないため、その日の録音の項目 (台帳適用後) に差し替える。
     private func dayReflectionText(_ text: String) -> String {
         let todos = HomeSummary.openTodos(from: items, ledger: ledgerStore.ledger)
-        let body = todos.isEmpty ? "- なし" : todos.map { "- " + $0.text }.joined(separator: "\n")
-        return ReflectionSections.replacingSection("TODO", in: text, with: body)
+        let todoBody = todos.isEmpty ? "- なし" : todos.map { "- " + $0.text }.joined(separator: "\n")
+        let decisions = HomeSummary.dayDecisions(from: items, ledger: ledgerStore.ledger)
+        let decisionBody = decisions.isEmpty ? "- なし" : decisions.map { "- " + $0 }.joined(separator: "\n")
+        let withTodos = ReflectionSections.replacingSection("TODO", in: text, with: todoBody)
+        return ReflectionSections.replacingSection("決定事項", in: withTodos, with: decisionBody)
     }
 
     private var timeline: String {

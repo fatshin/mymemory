@@ -55,6 +55,11 @@ struct HomeSummary {
         return todos
     }
 
+    /// 録音ごとの決定事項に台帳 (削除・編集) を重ね、同じ文言は 1 つにまとめる (時刻順)。
+    static func dayDecisions(from recordings: [Recording], ledger: TodoLedger) -> [String] {
+        ledger.dayDecisions(recordings.map { (id: $0.id, startedAt: $0.startedAt, summary: $0.summary) })
+    }
+
     static func build(recordings: [Recording], ledger: TodoLedger, now: Date = Date(), calendar: Calendar = .current) -> HomeSummary? {
         // recordings は新しい順。今日が無ければ、録音のある直近の日を出す
         guard let latest = recordings.first else { return nil }
@@ -80,12 +85,8 @@ struct HomeSummary {
 
         let cutoff = calendar.date(byAdding: .day, value: -todoDays, to: today) ?? .distantPast
         let todos = openTodos(from: recordings.filter { $0.startedAt >= cutoff }, ledger: ledger)
-        // 決定事項は表示する日のもの。振り返りがあればそれを使う (7日より前の日を表示していても拾う)
-        let decisions = saved.map { SummarySections.parse($0.text).decisions }
-            ?? items.flatMap { r in
-                // 一覧で消した・直した決定事項を反映する
-                (r.summary.map { SummarySections.parse($0).decisions } ?? []).compactMap { ledger.resolveDecision($0, recording: r.id, startedAt: r.startedAt) }
-            }
+        // 決定事項は表示する日の録音のもの (振り返りがあっても、一覧で消した・直した結果を出すため録音から取る)
+        let decisions = dayDecisions(from: items, ledger: ledger)
 
         return HomeSummary(day: day, dayLabel: label, items: items,
                            totalMinutes: Int(items.reduce(0) { $0 + $1.duration } / 60),

@@ -134,6 +134,21 @@ final class TodoLedgerTests: XCTestCase {
         // 決定事項は完了の一覧に出ない
         XCTAssertTrue(l.completed.isEmpty)
     }
+
+    /// 振り返りとホームの決定事項: 時刻順に並べ、消したものは出さず、直した文言を使い、同じ文言は 1 つにする。「なし」は出さない。
+    func testDayDecisionsApplyLedgerAndDedupe() {
+        let early = UUID(), late = UUID(), empty = UUID()
+        var l = TodoLedger()
+        l.delete(TodoLedger.decisionOriginal("会場は本社", recording: late), startedAt: at(0.2), now: at(1))
+        l.edit(TodoLedger.decisionOriginal("予算は据え置き", recording: early), startedAt: at(0.1), to: "予算は前年と同じ", now: at(1))
+        let out = l.dayDecisions([
+            (id: late, startedAt: at(0.2), summary: "【決定事項】\n- 会場は本社\n- 次回は金曜\n- 予算は前年と同じ"),
+            (id: early, startedAt: at(0.1), summary: "【決定事項】\n- 予算は据え置き\n- 次回は金曜"),
+            (id: empty, startedAt: at(0.3), summary: "【決定事項】\n- なし"),
+            (id: UUID(), startedAt: at(0.4), summary: nil),
+        ])
+        XCTAssertEqual(out, ["予算は前年と同じ", "次回は金曜"])
+    }
 }
 
 final class TodoLedgerPurgeScopeTests: XCTestCase {

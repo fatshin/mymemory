@@ -141,6 +141,18 @@ struct TodoLedger: Codable, Equatable {
         }
     }
 
+    /// 1 日の録音ごとの決定事項に台帳 (削除・編集) を重ね、同じ文言は 1 つにまとめる (録音の時刻順、録音の中は書かれた順)。
+    func dayDecisions(_ recordings: [(id: UUID, startedAt: Date, summary: String?)]) -> [String] {
+        var seen = Set<String>()
+        return recordings.sorted { $0.startedAt < $1.startedAt }.flatMap { r in
+            (r.summary.map { SummarySections.parse($0).decisions } ?? []).compactMap { d -> String? in
+                guard let shown = resolveDecision(d, recording: r.id, startedAt: r.startedAt),
+                      seen.insert(Self.key(shown)).inserted else { return nil }
+                return shown
+            }
+        }
+    }
+
     /// 要約の【決定事項】【TODO】に台帳を重ねた文 (完了は「[x] 」を付け、削除は消し、編集後の文言にする)。
     /// 決定事項は録音 (recording) が分かるときだけ重ねる。
     func overlay(summary: String, startedAt: Date, recording: UUID? = nil) -> String {

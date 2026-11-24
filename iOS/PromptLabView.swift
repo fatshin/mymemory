@@ -1,8 +1,8 @@
 import SwiftUI
 import SwiftData
 
-/// 要約への追加の指示を書き、同じ録音で「今の指示」と「編集中の指示」の要約を並べて比べる画面。
-/// 比べた要約は保存しない (録音の要約と、やること台帳は変えない)。
+/// 要約の基本の指示・追加の指示と、振り返りの指示を書き換える画面。
+/// 同じ録音で「今の指示」と「編集中の指示」の要約を並べて比べられる。比べた要約は保存しない (録音の要約と、やること台帳は変えない)。
 struct PromptLabView: View {
     @Query private var recordings: [Recording]
     @State private var draft = SummaryPrompt.custom
@@ -16,6 +16,10 @@ struct PromptLabView: View {
     @State private var resultB: Trial?
     @State private var error: String?
     @State private var job: Task<Void, Never>?
+    @State private var baseDraft = SummaryPrompt.base.current
+    @State private var baseSaved = SummaryPrompt.base.current
+    @State private var reflectionDraft = SummaryPrompt.reflectionBase.current
+    @State private var reflectionSaved = SummaryPrompt.reflectionBase.current
 
     struct Trial {
         let text: String
@@ -23,6 +27,7 @@ struct PromptLabView: View {
         let seconds: Double
         let customIgnored: Bool
         let instruction: String
+        let baseCustomized: Bool
     }
 
     init() {
@@ -63,11 +68,11 @@ struct PromptLabView: View {
                 Text("基本の指示の後ろに付けて、これから作る要約 (自動・手動とも) に使います。見出し (【概要】【要点】【決定事項】【TODO】) と箇条書きの形は変えられません。見出しが崩れた要約は、追加の指示なしで作り直します。作成済みの要約は変わりません。")
             }
 
-            Section("基本の指示 (変更できません)") {
-                DisclosureGroup("内容を見る") {
-                    Text(SummaryPrompt.final).font(.caption).textSelection(.enabled)
-                }
-            }
+            PromptEditor(title: "要約の基本の指示", prompt: SummaryPrompt.base, draft: $baseDraft, saved: $baseSaved,
+                         note: "1 本の録音の要約に使います。見出し (【概要】【要点】【決定事項】【TODO】) は残してください。端末内の要約は出力の形が決まっているため、指示は内容の書き方に効きます。")
+
+            PromptEditor(title: "振り返りの指示", prompt: SummaryPrompt.reflectionBase, draft: $reflectionDraft, saved: $reflectionSaved,
+                         note: "1 日の振り返りに使います。見出し (【1日の流れ】【決定事項】【TODO】【気づき】) は残してください。振り返りの決定事項と TODO は、録音ごとの項目 (一覧で直した結果) に差し替えて表示します。")
 
             Section {
                 Picker("録音", selection: $selected) {
@@ -82,17 +87,20 @@ struct PromptLabView: View {
                         ForEach(routes, id: \.self) { r in Text(r == .onDevice ? "端末内" : "外部API (\(Summarizer.provider.displayName))").tag(SummaryRoute?.some(r)) }
                     }
                 }
+                if let p = SummaryPrompt.base.problem(baseDraft) {
+                    Text("編集中の基本の指示は使えません: " + p).font(.footnote).foregroundStyle(.orange)
+                }
                 Button(running ? (progress ?? "比べています…") : "今の指示と編集中の指示で比べる" + routeSuffix(route)) {
                     running = true  // 二度押しで 2 回走らせない
                     job = Task { await compare() }
                 }
-                .disabled(running || selected == nil || route == nil)
+                .disabled(running || selected == nil || route == nil || SummaryPrompt.base.problem(baseDraft) != nil)
                 if running { Button("中止", role: .cancel) { job?.cancel() } }
                 if let error { Text(error).font(.footnote).foregroundStyle(.red) }
             } header: {
                 Text("試して比べる")
             } footer: {
-                Text("同じ録音を 2 回要約して並べます (結果は保存しません)。見直しは行わず、指示の違いだけを比べます。外部APIを選ぶと文字起こしを 2 回送信します。")
+                Text("同じ録音を、保存済みの指示 (A) と編集中の指示 (B、基本の指示と追加の指示の両方) で 2 回要約して並べます (結果は保存しません)。見直しは行わず、指示の違いだけを比べます。外部APIを選ぶと文字起こしを 2 回送信します。")
             }
 
             if let a = resultA, let b = resultB {
@@ -127,12 +135,13 @@ struct PromptLabView: View {
         }
         // 比べている間に編集しても、比べる指示は押した時点のものに固定する
         let instructionA = saved, instructionB = SummaryPrompt.clean(draft)
+        let baseA = baseSaved, baseB = baseDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
             let r = try Summarizer.confirmUsable(route ?? .onDevice)
             progress = "A: 今の指示で要約中…"
-            let a = try await trial(t, route: r, extra: instructionA)
+            let a = try await trial(t, route: r, extra: instructionA, base: baseA)
             progress = "B: 編集中の指示で要約中…"
-            let b = try await trial(t, route: r, extra: instructionB)
+            let b = try await trial(t, route: r, extra: instructionB, base: baseB)
             resultA = a; resultB = b
         } catch where Task.isCancelled || error is CancellationError {
             return
@@ -142,11 +151,56 @@ struct PromptLabView: View {
         }
     }
 
-    private func trial(_ t: String, route: SummaryRoute, extra: String) async throws -> Trial {
+    private func trial(_ t: String, route: SummaryRoute, extra: String, base: String) async throws -> Trial {
         let start = Date()
-        let r = try await Summarizer.summarize(t, route: route, extra: extra)
+        let r = try await Summarizer.summarize(t, route: route, extra: extra, base: base)
         return Trial(text: r.labeled, stats: SummaryPrompt.stats(r.text), seconds: Date().timeIntervalSince(start),
-                     customIgnored: r.customIgnored, instruction: extra)
+                     customIgnored: r.customIgnored, instruction: extra, baseCustomized: base != SummaryPrompt.final)
+    }
+}
+
+/// 指示の全文を書き換える欄。見出しが欠けた文・長すぎる文は保存しない。
+private struct PromptEditor: View {
+    let title: String
+    let prompt: SummaryPrompt.Editable
+    @Binding var draft: String
+    @Binding var saved: String
+    let note: String
+    @State private var error: String?
+
+    var body: some View {
+        Section {
+            TextEditor(text: $draft)
+                .font(.caption)
+                .frame(minHeight: 180)
+                .onChange(of: draft) { error = nil }  // 直している間に古い理由を出し続けない
+            HStack {
+                let n = draft.trimmingCharacters(in: .whitespacesAndNewlines).count
+                Text("\(n) / \(prompt.maxChars) 字").font(.caption)
+                    .foregroundStyle(n > prompt.maxChars ? .orange : .secondary)
+                Spacer()
+                if draft.trimmingCharacters(in: .whitespacesAndNewlines) != saved {
+                    Text("未保存").font(.caption.bold()).foregroundStyle(.orange)
+                } else if prompt.isCustomized {
+                    Text("変更済み").font(.caption.bold()).foregroundStyle(Theme.accentText)
+                }
+            }
+            if let error { Text(error).font(.footnote).foregroundStyle(.red) }
+            Button("この指示を保存") {
+                error = prompt.save(draft)
+                if error == nil { saved = prompt.current; draft = saved }
+            }
+            .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines) == saved)
+            Button("既定に戻す", role: .destructive) {
+                prompt.reset()
+                saved = prompt.current; draft = saved; error = nil
+            }
+            .disabled(!prompt.isCustomized && draft.trimmingCharacters(in: .whitespacesAndNewlines) == prompt.defaultText)
+        } header: {
+            Text(title)
+        } footer: {
+            Text(note + " 見出しが崩れた結果になったときは、既定の指示で作り直します。作成済みの要約・振り返りは変わりません。")
+        }
     }
 }
 
@@ -157,12 +211,12 @@ private struct TrialSection: View {
     var body: some View {
         Section {
             if trial.customIgnored {
-                Label("追加の指示で見出しが崩れたため、追加の指示なしで作り直した結果です", systemImage: "exclamationmark.triangle")
+                Label("書き換えた指示で見出しが崩れたため、既定の指示で作り直した結果です", systemImage: "exclamationmark.triangle")
                     .font(.footnote).foregroundStyle(.orange)
             }
             Text(trial.text).font(.callout).textSelection(.enabled)
         } header: {
-            Text(title + (trial.instruction.isEmpty ? " (追加なし)" : ""))
+            Text(title + (trial.baseCustomized ? " (基本の指示を変更)" : "") + (trial.instruction.isEmpty ? " (追加なし)" : ""))
         } footer: {
             if !trial.instruction.isEmpty { Text("指示: " + trial.instruction).lineLimit(3) }
         }
