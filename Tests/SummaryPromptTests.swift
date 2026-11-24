@@ -81,3 +81,14 @@ final class EditablePromptTests: XCTestCase {
     }
 }
 
+
+final class MediaAudioPromptTests: XCTestCase {
+    /// 既定の指示は、テレビ・動画の再生音声を本人の発言として扱わないよう伝え、そのまま保存できる長さに収まる。
+    func testDefaultsMentionPlaybackAudioAndFitLimits() {
+        XCTAssertTrue(SummaryPrompt.final.contains("再生音声"))
+        XCTAssertTrue(SummaryPrompt.reflection.contains("再生音声"))
+        XCTAssertTrue(SummaryPrompt.chunk.contains("再生音声"))
+        XCTAssertNil(SummaryPrompt.base.problem(SummaryPrompt.final))
+        XCTAssertNil(SummaryPrompt.reflectionBase.problem(SummaryPrompt.reflection))
+    }
+}

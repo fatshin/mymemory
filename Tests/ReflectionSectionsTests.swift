@@ -129,3 +129,51 @@ final class ReplacingSectionTests: XCTestCase {
         XCTAssertEqual(ReflectionSections.replacingSection("TODO", in: "【要点】\n- A", with: "- x"), "【要点】\n- A")
     }
 }
+
+final class EditingLineTests: XCTestCase {
+    private let text = "【1日の流れ】\n- 朝: 散歩\n- 昼: テレビの通販番組で鍋を買うと決めた\n\n【気づき】\n- 傾向A\n\n(端末内で要約)"
+
+    /// 間違った項目だけを直し、記号・他の節・注記は残す。
+    func testEditKeepsBulletAndOtherSections() {
+        let out = ReflectionSections.editingLine(in: text, section: 0, line: 1, to: "昼: テレビを見ていた")
+        let sections = ReflectionSections.parse(out)
+        XCTAssertEqual(sections[0].body, "- 朝: 散歩\n- 昼: テレビを見ていた")
+        XCTAssertEqual(sections[1].body, "- 傾向A")
+        XCTAssertEqual(ReflectionSections.routeLabel(in: out), "(端末内で要約)")
+    }
+
+    /// 削除は 1 行だけ。節が空になったら見出しは残して「- なし」にする (見出しで読む処理を壊さない)。
+    func testDeleteLineAndEmptySectionBecomesNone() {
+        let one = ReflectionSections.editingLine(in: text, section: 0, line: 0, to: "")
+        XCTAssertEqual(ReflectionSections.parse(one)[0].body, "- 昼: テレビの通販番組で鍋を買うと決めた")
+        let empty = ReflectionSections.editingLine(in: text, section: 1, line: 0, to: "  ")
+        XCTAssertEqual(ReflectionSections.parse(empty).map(\.title), ["1日の流れ", "気づき"])
+        XCTAssertEqual(ReflectionSections.parse(empty)[1].body, "- なし")
+        XCTAssertEqual(ReflectionSections.routeLabel(in: empty), "(端末内で要約)")
+    }
+
+    /// 画面の行番号 (items) と書き換える行が一致する。範囲外は何も変えない。
+    func testIndexesMatchItemsAndOutOfRangeIsNoop() {
+        let sections = ReflectionSections.parse(text)
+        XCTAssertEqual(ReflectionSections.items(of: sections[0]).count, 2)
+        XCTAssertEqual(ReflectionSections.editingLine(in: text, section: 0, line: 5, to: "x"), text)
+        XCTAssertEqual(ReflectionSections.editingLine(in: text, section: 9, line: 0, to: "x"), text)
+        let inline = "【気づき】: 一言だけ\n- 二つ目"
+        XCTAssertEqual(ReflectionSections.items(of: ReflectionSections.parse(inline)[0]), ["一言だけ", "- 二つ目"])
+        let edited = ReflectionSections.editingLine(in: inline, section: 0, line: 0, to: "直した")
+        XCTAssertEqual(ReflectionSections.parse(edited)[0].body, "直した\n- 二つ目")
+    }
+}
+
+final class EditingLineGuardTests: XCTestCase {
+    /// 数字で始まる文の数字を記号として消さない。見出しや注記の形の文を入れても節は増えない。
+    func testNumbersKeptAndHeadingLikeInputDoesNotSplitSections() {
+        XCTAssertEqual(ReflectionSections.stripEditBullet("10.5万円の見積もり"), "10.5万円の見積もり")
+        XCTAssertEqual(ReflectionSections.stripEditBullet("1. 朝の散歩"), "朝の散歩")
+        let text = "前置きの一文\n【気づき】\n傾向A\n\r\n(端末内で要約)"
+        let out = ReflectionSections.editingLine(in: text, section: 1, line: 0, to: "【メモ】大事")
+        XCTAssertEqual(ReflectionSections.parse(out).map(\.title), [nil, "気づき"])
+        XCTAssertEqual(ReflectionSections.parse(out)[1].body, "- 【メモ】大事")
+        XCTAssertEqual(ReflectionSections.parse(ReflectionSections.editingLine(in: text, section: 0, line: 0, to: "直した"))[0].body, "直した")
+    }
+}

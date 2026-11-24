@@ -147,17 +147,39 @@ struct TodayCard<Destination: View>: View {
 /// 振り返りの本文を見出しごとのカードで表示する。見出しが無い本文はそのまま 1 枚にする。
 struct ReflectionCards: View {
     let text: String
+    /// 渡すと、節の項目を 1 行ずつ押して編集できる (節の番号, 項目の番号, 項目の文)。
+    var onTapItem: ((Int, Int, String) -> Void)? = nil
+    /// 押して編集させない節 (別の画面の一覧から作る節)。その節には編集できる場所の案内を出す。
+    var lockedSections: [String: String] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ForEach(Array(ReflectionSections.parse(text).enumerated()), id: \.offset) { _, s in
+            ForEach(Array(ReflectionSections.parse(text).enumerated()), id: \.offset) { si, s in
                 VStack(alignment: .leading, spacing: 8) {
                     if let title = s.title {
                         Label(title, systemImage: Theme.icon(forSection: title))
                             .font(.headline).foregroundStyle(Theme.accentText)
                     }
-                    Text(s.body).font(.callout)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if let onTapItem, lockNote(s.title) == nil {
+                        ForEach(Array(ReflectionSections.items(of: s).enumerated()), id: \.offset) { li, item in
+                            Button { onTapItem(si, li, item) } label: {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text(item).font(.callout).multilineTextAlignment(.leading)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    Image(systemName: "pencil").font(.caption).foregroundStyle(.tertiary)
+                                }
+                                .contentShape(.rect)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityHint("押すと編集・削除できます")
+                        }
+                    } else {
+                        Text(s.body).font(.callout)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if onTapItem != nil, let note = lockNote(s.title) {
+                            Text(note).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 .padding(14)
                 .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 16))
@@ -168,6 +190,47 @@ struct ReflectionCards: View {
             }
         }
         .textSelection(.enabled)
+    }
+
+    /// 見出しの付記の揺れ (「TODO・約束」など) を許して、編集させない節かを調べる。
+    private func lockNote(_ title: String?) -> String? {
+        guard let t = title?.lowercased() else { return nil }
+        return lockedSections.first { t.hasPrefix($0.key.lowercased()) }?.value
+    }
+}
+
+/// 振り返りの 1 項目を直す・消す画面。
+struct ReflectionItemSheet: View {
+    @State private var text: String
+    var onSave: (String) -> Void
+    var onDelete: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    init(item: String, onSave: @escaping (String) -> Void, onDelete: @escaping () -> Void) {
+        _text = State(initialValue: ReflectionSections.stripEditBullet(item))
+        self.onSave = onSave
+        self.onDelete = onDelete
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("内容", text: $text, axis: .vertical).lineLimit(2...10)
+                } footer: {
+                    Text("空にして保存すると削除します。振り返りを生成し直すと、編集した内容は新しい振り返りに置き換わります。")
+                }
+                Section {
+                    Button(role: .destructive) { onDelete() } label: { Label("この項目を削除", systemImage: "trash") }
+                }
+            }
+            .navigationTitle("振り返りを編集")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("キャンセル") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button("保存") { onSave(text) }.bold() }
+            }
+        }
     }
 }
 

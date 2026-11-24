@@ -118,6 +118,80 @@ extension ReflectionSections {
         return out.joined(separator: "\n")
     }
 
+    /// 画面で 1 行ずつ編集・削除できる項目 (節の本文の空でない行)。`editingLine` の行番号はこの並びに対応する。
+    static func items(of section: Section) -> [String] {
+        section.body.components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+    }
+
+    /// `parse(text)` の section 番目の節にある line 番目の項目を value に書き換える。value が空なら行を消す。
+    /// 行頭の「- 」などの記号は元のまま残す。節の項目がすべて消えたら「- なし」を置く (見出しは一覧が読むため残す)。
+    /// 他の節・注記・空行はそのまま。該当する行が無ければ元の文を返す。
+    static func editingLine(in text: String, section: Int, line: Int, to value: String) -> String {
+        var lines = text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        let firstHeading = lines.firstIndex { heading($0.trimmingCharacters(in: .whitespaces)) != nil } ?? lines.count
+        let hasPreamble = lines[..<firstHeading].contains { isItemLine($0) }
+        var current = hasPreamble ? 0 : -1
+        var count = 0
+        var target: (index: Int, isHeadingRest: Bool)?
+        var sectionStart = 0, sectionEnd = lines.count
+        for (i, raw) in lines.enumerated() {
+            let l = raw.trimmingCharacters(in: .whitespaces)
+            if let h = heading(l) {
+                if current == section { sectionEnd = i; break }
+                current += 1
+                count = 0
+                sectionStart = i
+                if !h.rest.isEmpty {
+                    if current == section, count == line { target = (i, true) }
+                    count += 1
+                }
+                continue
+            }
+            guard current == section, isItemLine(raw) else { continue }
+            if count == line { target = (i, false) }
+            count += 1
+        }
+        guard let t = target else { return text }
+        let v = value.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
+        if t.isHeadingRest {
+            let title = heading(lines[t.index].trimmingCharacters(in: .whitespaces))?.title ?? ""
+            lines[t.index] = v.isEmpty ? "【\(title)】" : "【\(title)】: \(stripEditBullet(v))"
+        } else if v.isEmpty {
+            lines.remove(at: t.index)
+            sectionEnd -= 1
+        } else {
+            let raw = lines[t.index]
+            let prefix = raw.range(of: editBulletPattern, options: .regularExpression).map { String(raw[$0]) } ?? ""
+            let body = stripEditBullet(v)
+            // 記号の無い行に「【…】」や「(…で要約)」の形の文を入れると、見出し・注記と読まれて節が変わるため、記号を付ける
+            let guarded = prefix.isEmpty && (body.hasPrefix("【") || isRouteLabel(body)) ? "- " : prefix
+            lines[t.index] = guarded + body
+        }
+        // 見出しの行 (節の先頭) を除いて、項目が残っているか
+        let bodyStart = current >= 0 && heading(lines[sectionStart].trimmingCharacters(in: .whitespaces)) != nil ? sectionStart + 1 : sectionStart
+        let headingRest = heading(lines[sectionStart].trimmingCharacters(in: .whitespaces)).map { !$0.rest.isEmpty } ?? false
+        if v.isEmpty, !headingRest, !lines[bodyStart..<max(bodyStart, sectionEnd)].contains(where: isItemLine) {
+            lines.insert("- なし", at: bodyStart)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// 編集で扱う行頭の記号。数字は後ろに空白があるときだけ記号とみなす (「10.5万円」の「10.」を消さない)。
+    private static let editBulletPattern = #"^\s*([-・*•]\s*|\d+[.)、]\s+)"#
+
+    /// 編集の画面に出す、行頭の記号を外した文。
+    static func stripEditBullet(_ line: String) -> String {
+        var l = line.trimmingCharacters(in: .whitespaces)
+        if let r = l.range(of: editBulletPattern, options: .regularExpression) { l.removeSubrange(r) }
+        return l.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// 項目として数える行 (空行と注記以外)。
+    private static func isItemLine(_ raw: String) -> Bool {
+        let l = raw.trimmingCharacters(in: .whitespaces)
+        return !l.isEmpty && !isRouteLabel(l)
+    }
+
     /// 末尾の「(OpenAI で要約)」などの注記。どこで処理したかの開示として、本文とは別に表示する。
     static func routeLabel(in text: String) -> String? {
         guard let last = text.components(separatedBy: "\n").last(where: {

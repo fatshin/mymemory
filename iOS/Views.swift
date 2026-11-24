@@ -684,8 +684,28 @@ struct DayReflectionView: View {
     @State private var job: Task<Void, Never>?
     @State private var routes: [SummaryRoute] = []
     @State private var error: String?
+    @State private var editing: EditingItem?
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var ledgerStore = TodoLedgerStore.shared
+
+    /// 編集中の振り返りの項目 (節の番号・項目の番号は保存した本文の parse の並び)。
+    private struct EditingItem: Identifiable {
+        let section: Int
+        let line: Int
+        let text: String
+        var id: String { "\(section)-\(line)" }
+    }
+
+    /// 1 項目を書き換えて (空なら消して) 保存する。録音の件数などの生成時の情報は保存済みのまま引き継ぐ。
+    private func applyEdit(_ item: EditingItem, _ value: String) {
+        guard let current = text else { return }
+        let updated = ReflectionSections.editingLine(in: current, section: item.section, line: item.line, to: value)
+        text = updated
+        let saved = ReflectionStore.load(day)
+        ReflectionStore.save(updated, for: day, recordingCount: saved?.recordingCount ?? items.count,
+                             latestStart: saved?.latestStart ?? items.map(\.startedAt).max())
+        editing = nil
+    }
 
     /// 振り返りの【決定事項】【TODO】は言い回しが変わり台帳と照合できないため、その日の録音の項目 (台帳適用後) に差し替える。
     private func dayReflectionText(_ text: String) -> String {
@@ -708,7 +728,13 @@ struct DayReflectionView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 if let progress, loading { Text(progress).font(.caption).foregroundStyle(.secondary) }
-                if let text { ReflectionCards(text: dayReflectionText(text)) }
+                if let text {
+                    // 決定事項・TODO は一覧の内容から作るため、一覧で直す (直すとここにも反映される)
+                    ReflectionCards(text: dayReflectionText(text), onTapItem: loading ? nil : { s, l, item in
+                        editing = EditingItem(section: s, line: l, text: item)
+                    }, lockedSections: ["決定事項": "決定事項・TODO の一覧で編集・削除すると、ここにも反映されます",
+                                        "TODO": "決定事項・TODO の一覧で編集・削除すると、ここにも反映されます"])
+                }
                 if let error { Text(error).foregroundStyle(.red) }
                 VStack(alignment: .leading, spacing: 8) {
                     Label("タイムライン", systemImage: "list.bullet.rectangle").font(.headline)
@@ -745,6 +771,9 @@ struct DayReflectionView: View {
         }
         .onChange(of: scenePhase) { _, p in if p == .active { routes = Summarizer.usableRoutes() } }
         .onDisappear { job?.cancel() }  // 画面を離れたら残りの録音の要約を止める
+        .sheet(item: $editing) { item in
+            ReflectionItemSheet(item: item.text, onSave: { applyEdit(item, $0) }, onDelete: { applyEdit(item, "") })
+        }
     }
 
     /// 録音ごとの要約を再利用し、無い録音だけをその場で要約して保存してから、1 日分を束ねる。
