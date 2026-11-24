@@ -80,6 +80,13 @@ final class Pipeline: NSObject, ObservableObject {
     private var continuedStarted = false
     /// 継続タスクへ進捗 (音声の秒数) を報告する先。継続タスクが動いている間だけ持つ。
     private var progressSink: Progress?
+    /// 自動で継続タスクを申請した時刻。起動ハンドラ待ちの間に二重申請しない (起動しないまま残らないよう期限を付ける)。
+    private var continuedRequestedAt: Date?
+    private var continuedRequested: Bool {
+        continuedRequestedAt.map { Date().timeIntervalSince($0) < 30 } ?? false
+    }
+    /// 充電中に OS が起動した処理タスク (失効したら外す)。
+    private var activeProcessing: TaskHandle?
     /// 自動要約の失敗回数 (録音ごと、アプリ起動中だけ保持) と、最後に自動要約を始めた時刻。
     private var autoSummaryFailures: [UUID: Int] = [:]
     private var lastAutoSummaryRun: Date?
@@ -100,6 +107,8 @@ final class Pipeline: NSObject, ObservableObject {
     func setForeground(_ active: Bool) {
         foregroundActive = active
         guard active else { return }
+        // 前回の電池不足などの注意は、開き直したら判定し直す
+        if !userRun.isActive { continuedNote = nil }
         if !queue.isEmpty, canTranscribeNow(userInitiated: foregroundRun) {
             startDrain()
             continueInBackgroundIfCheap()
@@ -113,10 +122,26 @@ final class Pipeline: NSObject, ObservableObject {
     /// アプリを開いたときに保留があれば、画面を閉じても文字起こしを続ける継続タスクを申請する。
     /// 省電力のため、充電中か、電池残量 50% 以上かつ低電力モードでないときだけ (「今すぐ」と違い 20% までは使わない)。
     /// 背景では通常の電力判定で 1 件ごとに確かめ、条件を外れたら止まる。
+    /// アプリを開いている間に届いた録音も対象にするため、1 件ごとの文字起こしの前にも呼ぶ (申請は前面でしか通らない)。
     private func continueInBackgroundIfCheap() {
-        guard continuedRegistered, modelOnDisk, progressSink == nil, !userRun.isActive, !queue.isEmpty,
-              canTranscribeNow(userInitiated: false) else { return }
-        _ = BackgroundTranscribe.submitContinued(pending: queue.count)
+        guard continuedRegistered, modelOnDisk, progressSink == nil, !continuedRequested, !userRun.isActive,
+              !queue.isEmpty, UIApplication.shared.applicationState == .active else { return }
+        guard canTranscribeNow(userInitiated: false) else {
+            continuedNote = "電池残量が\(Int(PowerPolicy.minimumLevelOnBattery * 100))%未満のため、画面を閉じると文字起こしは止まります (充電すると再開)"
+            return
+        }
+        if let reason = BackgroundTranscribe.submitContinued(pending: queue.count) {
+            continuedNote = "背景で続けられないため、画面を閉じると文字起こしは止まります (\(reason))"
+        } else {
+            continuedRequestedAt = Date()
+            continuedNote = nil
+        }
+    }
+
+    /// 背景で文字起こしを進めてよい実行の枠 (継続タスク・充電中の処理タスク) があるか。
+    /// 枠が無いまま背景で始めると数秒で凍結され、途中で止まったように見え、強制終了されると中断回数だけが増える。
+    private var backgroundRunAllowed: Bool {
+        UIApplication.shared.applicationState != .background || progressSink != nil || activeProcessing != nil
     }
 
     /// 日本語向け。モデル名はWhisperKit側の対応表に依存 (要確認)。
@@ -344,6 +369,7 @@ final class Pipeline: NSObject, ObservableObject {
     func runContinued(_ handle: TaskHandle) {
         continuedStarted = true
         progressSink = handle.progress
+        if !userRun.isActive { continuedNote = nil }  // 自動申請の注意は、背景で動き出したら要らない
         handle.progress?.totalUnitCount = max(1, Int64(runFinishedSeconds + pendingSeconds()))
         reportProgress()
         let task = startDrain()
@@ -362,7 +388,10 @@ final class Pipeline: NSObject, ObservableObject {
         Task { @MainActor in
             await task.value
             // 後続の継続タスクが設定した進捗先を消さない
-            if progressSink === handle.progress { progressSink = nil }
+            if progressSink === handle.progress {
+                progressSink = nil
+                continuedRequestedAt = nil
+            }
             let finished = !task.isCancelled && queue.isEmpty
             handle.complete(success: finished)
             // 継続タスクの中では要約しないため、終わってから始める (前面にいるときだけ動く)
@@ -391,11 +420,13 @@ final class Pipeline: NSObject, ObservableObject {
     /// 前面で既に動いている drain があれば、それの終了を待つ (即完了して OS にサスペンドされるのを防ぐ)。
     /// 時間切れでは drain を取り消し、中断した録音を pending に戻す後始末を待ってから完了を通知する。
     func runBackground(_ handle: TaskHandle) {
+        activeProcessing = handle
         let task = startDrain()
         handle.setExpirationHandler { [weak self] in
             // 継続タスクが実際に同じ drain を進めている間だけ、処理タスクの失効で取り消さない
             // (「今すぐ」を押しても継続タスクが始まっていなければ、失効時に取り消して pending に戻す)
             Task { @MainActor in
+                if self?.activeProcessing === handle { self?.activeProcessing = nil }
                 if self?.progressSink == nil { task.cancel() }
                 BackgroundTranscribe.schedule(needsNetwork: !(self?.modelOnDisk ?? false))
             }
@@ -407,6 +438,7 @@ final class Pipeline: NSObject, ObservableObject {
         }
         Task { @MainActor in
             await task.value
+            if activeProcessing === handle { activeProcessing = nil }
             handle.complete(success: !task.isCancelled)
         }
     }
@@ -429,6 +461,14 @@ final class Pipeline: NSObject, ObservableObject {
                 // 文字起こしは充電待ちでも、済んだ分の要約は外部 API なら進められる (drain の後に別のタスクで行う)
                 return
             }
+            // Watch からの受信などで背景のまま起こされたときは始めない (凍結されて途中で止まるため)。
+            // 次にアプリを開いたとき、または充電中に OS が処理タスクを起動したときに続ける
+            guard backgroundRunAllowed else {
+                modelStatus = "画面を開くと再開 (\(queue.count)件保留・充電中は自動で処理)"
+                BackgroundTranscribe.schedule(needsNetwork: !modelOnDisk)
+                return
+            }
+            continueInBackgroundIfCheap()
             // 継続タスクの進捗の分母は、新しく届いた録音も含めて取り直す
             if let sink = progressSink {
                 sink.totalUnitCount = max(1, Int64(runFinishedSeconds + pendingSeconds()))
