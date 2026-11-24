@@ -42,6 +42,51 @@ struct AudioLevel: Equatable, Sendable {
     }
 }
 
+/// Whisper へ渡す前に、小さく録れた音声を持ち上げる。Watch を袖の下や離れた所に置くと声が小さく録れ、
+/// そのままでは Whisper が言葉として認識できない (最大 -18 dBFS 程度でも空の結果になる)。
+/// 最大振幅はクリック音 1 回で決まるため、上位 0.1% を除いた振幅を基準にする。持ち上げるだけで下げない。
+enum AudioGain {
+    /// 持ち上げた後の基準振幅 (-6 dBFS)。
+    static let targetPeak: Float = 0.5
+    /// 持ち上げの上限 (+30 dB)。雑音だけの録音を際限なく大きくしない。
+    static let maxGain: Float = 31.6
+    /// 基準にする振幅の位置 (大きい方から 0.1% を外れ値として除く)。
+    static let robustQuantile = 0.999
+
+    /// 掛ける倍率 (1 以上 maxGain 以下)。完全な無音は 1。
+    static func gain(for samples: [Float]) -> Float {
+        let peak = robustPeak(samples)
+        guard peak > 0 else { return 1 }
+        return min(maxGain, max(1, targetPeak / peak))
+    }
+
+    /// 倍率を掛けて ±1 に収めた音声。倍率が 1 なら元のまま返す。
+    static func normalized(_ samples: [Float]) -> [Float] {
+        let g = gain(for: samples)
+        guard g > 1 else { return samples }
+        return samples.map { max(-1, min(1, $0 * g)) }
+    }
+
+    /// 振幅の上位 (1 - robustQuantile) を除いた最大値。0.1 dB 刻みの度数分布で求める (並べ替えない)。
+    static func robustPeak(_ samples: [Float]) -> Float {
+        guard !samples.isEmpty else { return 0 }
+        let bins = 1_200  // -120 dB から 0 dB まで
+        var hist = [Int](repeating: 0, count: bins)
+        for v in samples {
+            let a = abs(v)
+            guard a > 0 else { continue }
+            let db = 20 * log10(min(a, 1))
+            hist[max(0, min(bins - 1, Int((db + 120) * 10)))] += 1
+        }
+        var above = Int(Double(samples.count) * (1 - robustQuantile))
+        for i in stride(from: bins - 1, through: 0, by: -1) {
+            above -= hist[i]
+            if above < 0 { return pow(10, (Float(i) / 10 - 120) / 20) }
+        }
+        return 0
+    }
+}
+
 /// Whisper の出力から、無音や雑音から作られた定型文を取り除く。
 enum TranscriptCleaner {
     /// 注意: WhisperKit 0.18.0 は区間の「発話なし」の確率を計算せず常に 0 を返す (TextDecoder.swift の TODO)。
@@ -60,6 +105,8 @@ enum TranscriptCleaner {
         "高評価よろしくお願いします", "次の動画でお会いしましょう", "最後までご視聴いただきありがとうございました",
         // Whisper に渡す書き方の手本 (Transcriber.promptText)。無音区間で手本をそのまま出すことがある
         "以下は日本語の会話の書き起こしです",
+        // 雑音だけの区間から出た実例 (2026-11-23 の録音)
+        "以上で終わります",
     ]
 
     static func clean(_ segments: [Segment]) -> String {

@@ -81,6 +81,7 @@ final class Pipeline: NSObject, ObservableObject {
             WCSession.default.delegate = self
             WCSession.default.activate()
         }
+        requeueUnrecognizedOnce()
         enqueueUnfinished()
         observePowerState()
         pruneOldAudio()
@@ -144,6 +145,22 @@ final class Pipeline: NSObject, ObservableObject {
                 Task { @MainActor in self?.startDrain() }
             }
         }
+    }
+
+    /// 小さい声を持ち上げる前に「言葉として認識できなかった」録音を、一度だけ文字起こし待ちに戻す。
+    /// 無音と判定した録音は判定が変わらないため戻さない (詳細画面の「再文字起こし」で個別にやり直せる)。
+    private func requeueUnrecognizedOnce() {
+        let key = "requeuedUnrecognizedAfterGainV1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        let desc = FetchDescriptor<Recording>(predicate: #Predicate { $0.statusRaw == "done" && $0.summary == nil })
+        guard let recs = try? context.fetch(desc) else { return }  // 読めなければ次の起動でやり直す
+        for rec in recs {
+            guard (rec.transcript ?? "").isEmpty, rec.errorMessage?.hasPrefix("音声を言葉として認識できませんでした") == true,
+                  FileManager.default.fileExists(atPath: rec.fileURL.path) else { continue }
+            rec.statusRaw = "pending"; rec.errorMessage = nil; rec.attempts = 0
+        }
+        guard (try? context.save()) != nil else { return }
+        UserDefaults.standard.set(true, forKey: key)
     }
 
     /// 再起動後も、未完了(pending/transcribing)の録音をキューへ戻す。
@@ -691,8 +708,10 @@ final class Transcriber: @unchecked Sendable {
         // chunkingStrategy: .vad は無音を捨てず、長尺音声を無音境界で分割するだけ (公式README)。
         // 推論量は減らず並列度が上がるため使わない。
         var lastWindow = -1
-        let results = try await w.transcribe(
-            audioPath: audioPath,
+        // 無音の判定は元の音量で行い (上で済み)、Whisper には小さい声を持ち上げた音声を渡す
+        let samples = AudioGain.normalized(try AudioProcessor.loadAudioAsFloatArray(fromPath: audioPath))
+        let results: [TranscriptionResult] = try await w.transcribe(
+            audioArray: samples,
             decodeOptions: DecodingOptions(language: "ja", skipSpecialTokens: true, promptTokens: promptTokens(w))
         ) { progress in
             if progress.windowId != lastWindow {

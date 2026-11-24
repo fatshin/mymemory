@@ -66,4 +66,40 @@ final class TranscriptCleanerTests: XCTestCase {
         let out = TranscriptCleaner.clean([.init(text: "以下は、日本語の会話の書き起こしです。"), .init(text: "明日の会議は十時からです。")])
         XCTAssertEqual(out, "明日の会議は十時からです。")
     }
+
+    /// 小さく録れた声は持ち上げて Whisper へ渡す (-30 dBFS の声が -6 dBFS 前後になる)。
+    func testQuietAudioIsBoostedToTarget() {
+        let amp: Float = 0.0316  // -30 dBFS
+        let quiet = (0..<16_000).map { amp * sin(Float($0) * 2 * .pi * 300 / 16_000) }
+        let g = AudioGain.gain(for: quiet)
+        XCTAssertEqual(g, AudioGain.targetPeak / amp, accuracy: 1.0)
+        let out = AudioGain.normalized(quiet)
+        XCTAssertEqual(out.map(abs).max()!, AudioGain.targetPeak, accuracy: 0.02)
+    }
+
+    /// クリック音 1 回では倍率を決めない (大きな 1 サンプルがあっても、小さい声を持ち上げる)。
+    func testSingleClickDoesNotBlockBoost() {
+        var quiet = (0..<16_000).map { 0.01 * sin(Float($0) * 2 * .pi * 300 / 16_000) }
+        quiet[500] = 0.9
+        XCTAssertGreaterThan(AudioGain.gain(for: quiet), 20)
+        // 持ち上げてもクリックは ±1 に収める
+        XCTAssertLessThanOrEqual(AudioGain.normalized(quiet).map(abs).max()!, 1)
+    }
+
+    /// 十分な音量は下げない。雑音だけの録音も +30 dB を超えて持ち上げない。完全な無音はそのまま。
+    func testGainBounds() {
+        let loud = (0..<16_000).map { 0.8 * sin(Float($0) * 2 * .pi * 300 / 16_000) }
+        XCTAssertEqual(AudioGain.gain(for: loud), 1)
+        XCTAssertEqual(AudioGain.normalized(loud), loud)
+        let faint = (0..<16_000).map { 0.0001 * sin(Float($0) * 2 * .pi * 300 / 16_000) }
+        XCTAssertEqual(AudioGain.gain(for: faint), AudioGain.maxGain)
+        XCTAssertEqual(AudioGain.gain(for: [Float](repeating: 0, count: 100)), 1)
+        XCTAssertEqual(AudioGain.gain(for: []), 1)
+    }
+
+    /// 雑音から出た「以上で終わります。」だけの区間は捨て、会話の中の文は残す。
+    func testClosingPhraseHallucinationIsRemoved() {
+        XCTAssertEqual(TranscriptCleaner.clean([.init(text: "以上で終わります。")]), "")
+        XCTAssertEqual(TranscriptCleaner.clean([.init(text: "今日の議題は以上で終わりますか")]), "今日の議題は以上で終わりますか")
+    }
 }
