@@ -424,22 +424,42 @@ final class Pipeline: NSObject, ObservableObject {
             rec.attempts += 1
             try? context.save()
             do {
-                if !modelLoaded {
-                    // 取得済みなら読み込むだけ (アプリの更新直後は端末向けの準備で数分かかることがある)
-                    modelStatus = modelOnDisk ? "文字起こしモデルを読み込み中… (通信なし)"
-                                              : "文字起こしモデルをダウンロード中… (初回のみ・約630MB)"
-                }
                 currentFileSeconds = rec.duration > 0 ? rec.duration : Self.audioDuration(rec.fileURL)
+                let minutes = max(1, Int((currentFileSeconds / 60).rounded(.up)))
+                let left = queue.count
+                // 読み込み中は経過時間を出す (止まって見えないように。アプリの更新直後は端末向けの準備で数分かかる)
+                let loading = modelLoaded ? nil : Task { @MainActor [weak self, onDisk = modelOnDisk] in
+                    let start = Date()
+                    while !Task.isCancelled {
+                        let m = Int(Date().timeIntervalSince(start) / 60)
+                        let base = onDisk ? "文字起こしモデルを読み込み中 (通信なし)" : "文字起こしモデルをダウンロード中 (初回のみ・約630MB)"
+                        self?.modelStatus = base + (m > 0 ? " \(m)分経過・画面を開いたままにしてください" : "…")
+                        try? await Task.sleep(for: .seconds(20))
+                    }
+                }
+                defer { loading?.cancel() }
+                if modelLoaded { modelStatus = "文字起こし中 (\(minutes)分の録音・残り\(left)件)" }
                 reportProgress()
                 // 進捗の更新は軽く保つ (ウィンドウが変わったときだけ MainActor へ戻す)
-                let result = try await transcriber.transcribe(audioPath: rec.fileURL.path) { [weak self] window in
-                    Task { @MainActor in self?.reportProgress(windowIndex: window) }
+                let result = try await transcriber.transcribe(audioPath: rec.fileURL.path, onReady: { [weak self] in
+                    Task { @MainActor in
+                        loading?.cancel()
+                        self?.modelStatus = "文字起こし中 (\(minutes)分の録音・残り\(left)件)"
+                    }
+                }) { [weak self] window in
+                    Task { @MainActor in
+                        self?.reportProgress(windowIndex: window)
+                        // 30 秒ごとの区切りで進み具合を出す
+                        guard let self, self.modelStatus.hasPrefix("文字起こし中") else { return }
+                        self.modelStatus = "文字起こし中 \(min(minutes, window / 2 + 1)) / \(minutes)分 (残り\(left)件)"
+                    }
                 }
+                loading?.cancel()
                 if !result.skippedSilent {
                     modelLoaded = true
                     modelLoadFailures = 0
-                    modelStatus = "準備完了"
                 }
+                modelStatus = "準備完了"
                 var text = result.text
                 var raw: String?
                 var proofreadDone = false
@@ -711,7 +731,9 @@ final class Transcriber: @unchecked Sendable {
 
     /// - Parameter onWindow: 30 秒ウィンドウが進むたびに、処理中のウィンドウ番号 (0 始まり) を渡す。
     @concurrent
-    func transcribe(audioPath: String, onWindow: (@Sendable (Int) -> Void)? = nil) async throws -> Output {
+    /// - Parameter onReady: モデルの準備ができ、文字起こしを始めるときに呼ぶ (無音で飛ばしたときは呼ばない)。
+    func transcribe(audioPath: String, onReady: (@Sendable () -> Void)? = nil,
+                    onWindow: (@Sendable (Int) -> Void)? = nil) async throws -> Output {
         // 無音ならモデルを読み込まずに終える (Whisper は無音から定型文を作るうえ、電力も使う)
         let level = AudioLevel.measure(URL(fileURLWithPath: audioPath))
         if let level, level.isSilent { return Output(text: "", level: level, skippedSilent: true) }
@@ -741,6 +763,7 @@ final class Transcriber: @unchecked Sendable {
         }
         // chunkingStrategy: .vad は無音を捨てず、長尺音声を無音境界で分割するだけ (公式README)。
         // 推論量は減らず並列度が上がるため使わない。
+        onReady?()
         var lastWindow = -1
         // 無音の判定は元の音量で行い (上で済み)、Whisper には小さい声を持ち上げた音声を渡す
         let samples = AudioGain.normalized(try AudioProcessor.loadAudioAsFloatArray(fromPath: audioPath))
